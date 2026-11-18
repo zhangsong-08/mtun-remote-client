@@ -1,0 +1,152 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>mtun 客户端控制台</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+  <div class="shell">
+    <aside class="sidebar">
+      <div class="brand">mtun <span class="tag">客户端</span></div>
+      <nav class="nav">
+        <a href="#/overview" data-page="overview">概览</a>
+        <a href="#/server" data-page="server">服务端</a>
+        <a href="#/rules" data-page="rules">端口转发</a>
+        <a href="#/update" data-page="update">版本更新</a>
+      </nav>
+      <div class="sidebar-foot">
+        <span id="side-version">-</span>
+        <a href="/logout">退出登录</a>
+      </div>
+    </aside>
+
+    <main class="main">
+      <section class="page" id="page-overview">
+        <div class="page-head">
+          <h1>概览</h1>
+          <span class="muted">仅显示本客户端的数据</span>
+        </div>
+        <div class="card-row">
+          <div class="card"><div class="label">连接状态</div><div class="value small" id="conn-state">-</div></div>
+          <div class="card"><div class="label">节点</div><div class="value small" id="node-id">-</div></div>
+          <div class="card"><div class="label">覆盖 IP</div><div class="value small" id="overlay">-</div></div>
+          <div class="card"><div class="label">连接时长</div><div class="value small" id="uptime">-</div></div>
+        </div>
+        <div class="note" id="error" hidden></div>
+        <div class="panel">
+          <div class="panel-head">
+            <h2>本机信息</h2>
+            <span class="muted">控制台仅监听 127.0.0.1</span>
+          </div>
+          <div class="info-list">
+            <div><span>服务端地址</span><b class="mono" id="info-server">-</b></div>
+            <div><span>接入密码</span><b id="info-access">-</b></div>
+            <div><span>转发规则</span><b id="info-rules">-</b></div>
+            <div><span>程序版本</span><b id="info-version">-</b></div>
+          </div>
+        </div>
+      </section>
+
+      <section class="page" id="page-server" hidden>
+        <div class="page-head">
+          <h1>服务端</h1>
+          <span class="muted">地址与接入密码由服务端管理员提供</span>
+        </div>
+        <div class="panel">
+          <div class="panel-head">
+            <h2>连接配置</h2>
+            <span class="muted">修改后自动重连</span>
+          </div>
+          <form class="form-grid" id="server-form">
+            <label>服务端地址
+              <input id="server" placeholder="1.2.3.4:10000" autocomplete="off" required>
+            </label>
+            <label>接入密码
+              <input id="key" type="password" autocomplete="new-password" placeholder="首次必填，之后留空表示不修改">
+            </label>
+            <button type="submit">保存并重连</button>
+          </form>
+          <div class="form-msg" id="server-msg"></div>
+        </div>
+      </section>
+
+      <section class="page" id="page-rules" hidden>
+        <div class="page-head">
+          <h1>端口转发</h1>
+          <span class="muted">只显示本客户端的规则</span>
+        </div>
+        <div class="panel">
+          <div class="panel-head">
+            <h2>添加规则</h2>
+            <span class="muted">添加后服务端会监听对应公网端口</span>
+          </div>
+          <form class="form-grid" id="rule-form">
+            <label>名称
+              <input id="r-name" placeholder="nas-web" autocomplete="off" required>
+            </label>
+            <label>协议
+              <select id="r-proto">
+                <option value="tcp">tcp</option>
+                <option value="http">http</option>
+              </select>
+            </label>
+            <label>公网端口
+              <input id="r-listen" type="number" min="10000" max="65535" placeholder="10101" required>
+            </label>
+            <label>内网目标
+              <input id="r-target" placeholder="127.0.0.1:5000" autocomplete="off" required>
+            </label>
+            <button type="submit">添加规则</button>
+          </form>
+          <div class="form-msg" id="rule-msg"></div>
+        </div>
+        <div class="panel">
+          <div class="toolbar">
+            <input id="rule-search" class="search" placeholder="搜索规则名、端口或目标">
+            <span class="spacer"></span>
+            <span class="muted" id="rule-count"></span>
+          </div>
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>名称</th>
+                  <th>协议</th>
+                  <th>公网端口</th>
+                  <th>内网目标</th>
+                  <th>状态</th>
+                  <th>操作</th>
+                </tr>
+              </thead>
+              <tbody id="rows"></tbody>
+            </table>
+          </div>
+        </div>
+      </section>
+
+      <section class="page" id="page-update" hidden>
+        <div class="page-head">
+          <h1>版本更新</h1>
+          <span class="muted" id="update-current">-</span>
+        </div>
+        <div class="panel">
+          <div class="panel-head">
+            <h2>在线更新</h2>
+            <span class="muted">只替换程序，配置与转发规则不会丢失</span>
+          </div>
+          <div class="update-row">
+            <span class="muted" id="update-status">-</span>
+            <span class="spacer"></span>
+            <button type="button" class="secondary" id="btn-check">检查更新</button>
+            <button type="button" id="btn-update" disabled>立即更新并重启</button>
+          </div>
+          <div class="update-notes" id="update-notes"></div>
+        </div>
+      </section>
+    </main>
+  </div>
+  <script src="/static/app.js"></script>
+</body>
+</html>

@@ -1,0 +1,23 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{{.Title}}</title>
+  <link rel="stylesheet" href="/__mtun/style.css">
+</head>
+<body>
+  <div class="login-wrap">
+    <form class="login-card" method="post" action="/login">
+      <h1>{{.Title}}</h1>
+      <p>{{.Hint}}</p>
+      <label for="user">用户名</label>
+      <input id="user" name="user" type="text" value="{{.User}}" autocomplete="username" required>
+      <label for="password">密码</label>
+      <input id="password" name="password" type="password" autocomplete="current-password" autofocus required>
+      <button type="submit">登录</button>
+      {{if .Error}}<div class="error">{{.Error}}</div>{{end}}
+    </form>
+  </div>
+</body>
+</html>

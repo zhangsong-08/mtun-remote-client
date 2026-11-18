@@ -1,0 +1,270 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>mtun 服务端控制台</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+  <div class="shell">
+    <aside class="sidebar">
+      <div class="brand">mtun <span class="tag">服务端</span></div>
+      <nav class="nav">
+        <a href="#/overview" data-page="overview">系统状态</a>
+        <a href="#/nodes" data-page="nodes">节点</a>
+        <a href="#/rules" data-page="rules">转发规则</a>
+        <a href="#/panel" data-page="panel">面板管理</a>
+        <a href="#/update" data-page="update">版本更新</a>
+      </nav>
+      <div class="sidebar-foot">
+        <span id="side-version">-</span>
+        <a href="/logout">退出登录</a>
+      </div>
+    </aside>
+
+    <main class="main">
+      <section class="page" id="page-overview">
+        <div class="page-head">
+          <h1>系统状态</h1>
+          <span class="muted" id="uptime">-</span>
+        </div>
+
+        <div class="gauge-row">
+          <div class="gauge-card">
+            <div class="gauge g-cpu" id="g-cpu">
+              <div class="gauge-inner"><b id="g-cpu-val">0%</b><span>CPU</span></div>
+            </div>
+          </div>
+          <div class="gauge-card">
+            <div class="gauge g-mem" id="g-mem">
+              <div class="gauge-inner"><b id="g-mem-val">0%</b><span>内存</span></div>
+            </div>
+          </div>
+          <div class="gauge-card">
+            <div class="gauge g-swap" id="g-swap">
+              <div class="gauge-inner"><b id="g-swap-val">0%</b><span>交换空间</span></div>
+            </div>
+          </div>
+          <div class="gauge-card">
+            <div class="gauge g-disk" id="g-disk">
+              <div class="gauge-inner"><b id="g-disk-val">0%</b><span>存储</span></div>
+            </div>
+          </div>
+        </div>
+
+        <div class="grid-2">
+          <div class="panel">
+            <div class="panel-head"><h2>服务状态</h2><span class="badge ok">运行中</span></div>
+            <div class="panel-body">
+              <div class="kv"><span>控制面</span><b class="mono">:10000（TLS 1.3）</b></div>
+              <div class="kv"><span>中继</span><b class="mono">:10002</b></div>
+              <div class="kv"><span>在线节点</span><b id="ov-nodes">-</b></div>
+              <div class="kv"><span>转发规则</span><b id="ov-rules">-</b></div>
+            </div>
+            <div class="panel-actions">
+              <a class="btn secondary" href="#/nodes">查看节点</a>
+              <a class="btn secondary" href="#/rules">查看规则</a>
+            </div>
+          </div>
+
+          <div class="panel">
+            <div class="panel-head"><h2>面板</h2><span class="muted">仅回环访问</span></div>
+            <div class="panel-body">
+              <div class="kv"><span>监听地址</span><b class="mono" id="ov-panel-addr">-</b></div>
+              <div class="kv"><span>会话时长</span><b id="ov-session">-</b></div>
+              <div class="kv"><span>列表每页</span><b id="ov-pagesize">-</b></div>
+            </div>
+            <div class="panel-actions">
+              <a class="btn secondary" href="#/panel">面板管理</a>
+              <button type="button" class="btn secondary" id="btn-restart-panel">重启面板</button>
+            </div>
+          </div>
+
+          <div class="panel">
+            <div class="panel-head"><h2>版本</h2><span class="muted">在线更新</span></div>
+            <div class="panel-body">
+              <div class="kv"><span>当前版本</span><b id="ov-version">-</b></div>
+              <div class="kv"><span>更新来源</span><b>GitHub Release</b></div>
+            </div>
+            <div class="panel-actions">
+              <a class="btn secondary" href="#/update">检查更新</a>
+            </div>
+          </div>
+
+          <div class="panel">
+            <div class="panel-head"><h2>系统运行时间</h2></div>
+            <div class="panel-body">
+              <div class="kv"><span>面板</span><b id="ov-uptime">-</b></div>
+              <div class="kv"><span>操作系统</span><b id="ov-os-uptime">-</b></div>
+            </div>
+          </div>
+
+          <div class="panel">
+            <div class="panel-head"><h2>使用情况</h2></div>
+            <div class="panel-body">
+              <div class="kv"><span>进程内存</span><b id="ov-rss">-</b></div>
+              <div class="kv"><span>线程数</span><b id="ov-threads">-</b></div>
+              <div class="kv"><span>协程数</span><b id="ov-goroutines">-</b></div>
+            </div>
+          </div>
+
+          <div class="panel">
+            <div class="panel-head"><h2>网络速度</h2><span class="muted">每秒</span></div>
+            <div class="panel-body">
+              <div class="kv"><span>上传</span><b id="ov-up">-</b></div>
+              <div class="kv"><span>下载</span><b id="ov-down">-</b></div>
+            </div>
+          </div>
+
+          <div class="panel">
+            <div class="panel-head"><h2>总数据</h2><span class="muted">本机累计</span></div>
+            <div class="panel-body">
+              <div class="kv"><span>已发送</span><b id="ov-sent">-</b></div>
+              <div class="kv"><span>已接收</span><b id="ov-recv">-</b></div>
+            </div>
+          </div>
+
+          <div class="panel">
+            <div class="panel-head">
+              <h2>IP 地址</h2>
+              <button type="button" class="btn-link" id="btn-toggle-ip">显示</button>
+            </div>
+            <div class="panel-body">
+              <div class="kv"><span>IPv4</span><b class="mono" id="ov-ipv4">-</b></div>
+              <div class="kv"><span>IPv6</span><b class="mono" id="ov-ipv6">-</b></div>
+            </div>
+          </div>
+
+          <div class="panel">
+            <div class="panel-head"><h2>连接数</h2><span class="muted">本机</span></div>
+            <div class="panel-body">
+              <div class="kv"><span>TCP</span><b id="ov-tcp">-</b></div>
+              <div class="kv"><span>UDP</span><b id="ov-udp">-</b></div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section class="page" id="page-nodes" hidden>
+        <div class="page-head">
+          <h1>节点</h1>
+          <span class="muted">展开“详情”查看该客户端全部转发规则</span>
+        </div>
+        <div class="panel">
+          <div class="toolbar">
+            <input id="node-search" class="search" placeholder="搜索节点、覆盖 IP 或端点">
+            <span class="spacer"></span>
+            <span class="muted" id="node-count"></span>
+          </div>
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>节点</th>
+                  <th>覆盖 IP</th>
+                  <th>路径</th>
+                  <th>规则</th>
+                  <th>最后心跳</th>
+                  <th>端点</th>
+                </tr>
+              </thead>
+              <tbody id="node-rows"></tbody>
+            </table>
+          </div>
+        </div>
+      </section>
+
+      <section class="page" id="page-rules" hidden>
+        <div class="page-head">
+          <h1>转发规则</h1>
+          <span class="muted">汇总所有客户端上报的端口映射</span>
+        </div>
+        <div class="panel">
+          <div class="toolbar">
+            <input id="rule-search" class="search" placeholder="搜索节点、规则名、端口或目标">
+            <span class="spacer"></span>
+            <span class="muted" id="rule-count"></span>
+            <button type="button" class="btn secondary" id="rule-prev">上一页</button>
+            <span class="muted" id="rule-page"></span>
+            <button type="button" class="btn secondary" id="rule-next">下一页</button>
+          </div>
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>节点</th>
+                  <th>规则</th>
+                  <th>协议</th>
+                  <th>公网端口</th>
+                  <th>内网目标</th>
+                  <th>状态</th>
+                </tr>
+              </thead>
+              <tbody id="rule-rows"></tbody>
+            </table>
+          </div>
+        </div>
+      </section>
+
+      <section class="page" id="page-panel" hidden>
+        <div class="page-head">
+          <h1>面板管理</h1>
+          <span class="muted">修改后需重启面板生效</span>
+        </div>
+        <div class="note">面板出于安全考虑只允许监听回环地址（127.0.0.1 / localhost / ::1）。修改监听地址或会话时长后，请点击“重启面板”。</div>
+        <div class="panel">
+          <div class="panel-head">
+            <h2>常规设置</h2>
+            <span class="muted" id="panel-path"></span>
+          </div>
+          <form class="form-grid" id="panel-form">
+            <label>面板监听地址
+              <input id="p-dashboard" placeholder="127.0.0.1:10004" autocomplete="off" required>
+            </label>
+            <label>会话时长（分钟）
+              <input id="p-session" type="number" min="5" max="10080" required>
+            </label>
+            <label>列表每页条数
+              <input id="p-pagesize" type="number" min="5" max="200" required>
+            </label>
+            <button type="submit" class="btn">保存设置</button>
+            <button type="button" class="secondary" id="btn-restart">重启面板</button>
+          </form>
+          <div class="form-msg" id="panel-msg"></div>
+        </div>
+        <div class="panel">
+          <div class="panel-head"><h2>安全信息</h2></div>
+          <div class="info-list">
+            <div><span>管理密码</span><b>已设置（终端 mtun passwd 修改）</b></div>
+            <div><span>访问范围</span><b>仅回环地址</b></div>
+            <div><span>会话策略</span><b>绝对有效期 + 空闲 30 分钟自动失效</b></div>
+            <div><span>配置文件</span><b class="mono" id="panel-config">-</b></div>
+          </div>
+        </div>
+      </section>
+
+      <section class="page" id="page-update" hidden>
+        <div class="page-head">
+          <h1>版本更新</h1>
+          <span class="muted" id="update-current">-</span>
+        </div>
+        <div class="panel">
+          <div class="panel-head">
+            <h2>在线更新</h2>
+            <span class="muted">只替换程序，配置文件与节点数据不会丢失</span>
+          </div>
+          <div class="update-row">
+            <span class="muted" id="update-status">-</span>
+            <span class="spacer"></span>
+            <button type="button" class="secondary" id="btn-check">检查更新</button>
+            <button type="button" class="btn" id="btn-update" disabled>立即更新并重启</button>
+          </div>
+          <div class="update-notes" id="update-notes"></div>
+        </div>
+      </section>
+    </main>
+  </div>
+  <script src="/static/app.js"></script>
+</body>
+</html>

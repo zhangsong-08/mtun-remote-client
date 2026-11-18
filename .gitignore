@@ -1,0 +1,15 @@
+bin/
+*.exe
+*.db
+*.log
+*.err
+.env
+*.passwd
+*.apitoken
+*.join
+*.tmp
+configs/join.token
+logs/
+# runtime configs (keep only examples)
+configs/server.yaml
+configs/client.yaml

@@ -1,0 +1,25 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{{.Title}}</title>
+  <link rel="stylesheet" href="/__mtun/style.css">
+</head>
+<body>
+  <div class="login-wrap">
+    <form class="login-card" method="post" action="/setup">
+      <h1>{{.Title}}</h1>
+      <p>首次使用请设置本机登录密码（至少 8 位），只有知道该密码的人才能打开控制台。</p>
+      <label for="user">用户名</label>
+      <input id="user" name="user" type="text" value="admin" autocomplete="username" required>
+      <label for="password">登录密码</label>
+      <input id="password" name="password" type="password" autocomplete="new-password" autofocus required>
+      <label for="confirm">确认密码</label>
+      <input id="confirm" name="confirm" type="password" autocomplete="new-password" required>
+      <button type="submit">设置并登录</button>
+      {{if .Error}}<div class="error">{{.Error}}</div>{{end}}
+    </form>
+  </div>
+</body>
+</html>
