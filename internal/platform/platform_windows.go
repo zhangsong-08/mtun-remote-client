@@ -30,6 +30,25 @@ func DetachProcAttr(breakaway bool) *syscall.SysProcAttr {
 	return &syscall.SysProcAttr{CreationFlags: flags, HideWindow: true}
 }
 
+// ProcessAlive 判断进程是否仍在运行（用于重启助手等待旧进程退出）。
+func ProcessAlive(pid int) bool {
+	if pid <= 0 {
+		return false
+	}
+	const synchronize = 0x00100000
+	h, err := syscall.OpenProcess(synchronize, false, uint32(pid))
+	if err != nil {
+		return false
+	}
+	defer syscall.CloseHandle(h)
+	const waitTimeout = 0x00000102 // WAIT_TIMEOUT
+	event, err := syscall.WaitForSingleObject(h, 0)
+	if err != nil {
+		return false
+	}
+	return event == waitTimeout
+}
+
 func DataDir() string {
 	return ConfigDir()
 }

@@ -376,7 +376,10 @@ func (s *Server) handleUpdate(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		s.log.Info("开始在线更新", "from", u.Current, "to", rel.Version)
-		exe, err := u.Apply(r.Context(), rel)
+		// 下载不绑定请求上下文：浏览器超时或断开时不应中断更新。
+		dlCtx, cancel := context.WithTimeout(context.Background(), 15*time.Minute)
+		defer cancel()
+		exe, err := u.Apply(dlCtx, rel)
 		if err != nil {
 			webx.WriteError(w, http.StatusInternalServerError, err)
 			return

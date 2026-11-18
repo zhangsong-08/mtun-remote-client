@@ -10,6 +10,15 @@ func DetachProcAttr(bool) *syscall.SysProcAttr {
 	return &syscall.SysProcAttr{Setsid: true}
 }
 
+// ProcessAlive 判断进程是否仍在运行。
+func ProcessAlive(pid int) bool {
+	if pid <= 0 {
+		return false
+	}
+	err := syscall.Kill(pid, 0)
+	return err == nil || err == syscall.EPERM
+}
+
 func ConfigDir() string { return "/etc/mtun" }
 
 func DataDir() string { return "/var/lib/mtun" }

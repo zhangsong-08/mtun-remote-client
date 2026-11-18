@@ -59,7 +59,10 @@ func New(log *slog.Logger) *Updater {
 		Current: version.Version,
 		Token:   strings.TrimSpace(os.Getenv("MTUN_GITHUB_TOKEN")),
 		Log:     log,
-		client:  &http.Client{Timeout: 2 * time.Minute},
+		client: &http.Client{
+			// 更新包可能有十几 MB，弱网下 2 分钟不够；整体仍由调用方 context 兜底。
+			Timeout: 15 * time.Minute,
+		},
 	}
 }
 
@@ -273,7 +276,10 @@ func ScheduleRestart(exe string, log *slog.Logger) error {
 	if err != nil {
 		return fmt.Errorf("序列化启动参数失败: %w", err)
 	}
-	env := append(os.Environ(), "MTUN_RESTART_ARGS_JSON="+string(raw))
+	env := append(os.Environ(),
+		"MTUN_RESTART_ARGS_JSON="+string(raw),
+		"MTUN_RESTART_PARENT_PID="+strconv.Itoa(os.Getpid()),
+	)
 
 	start := func(detach bool) error {
 		cmd := exec.Command(exe, "__restart")
@@ -309,8 +315,17 @@ func RunRestartHelper(log *slog.Logger) error {
 	if err != nil {
 		return err
 	}
-	// 旧进程通常已开始退出，短暂等待即可；端口可能仍有 TIME_WAIT 残留。
-	time.Sleep(800 * time.Millisecond)
+	// 必须等旧进程真正退出再启动，否则新进程会因端口仍被占用而立即退出。
+	if raw := os.Getenv("MTUN_RESTART_PARENT_PID"); raw != "" {
+		if pid, err := strconv.Atoi(raw); err == nil && pid > 0 {
+			deadline := time.Now().Add(30 * time.Second)
+			for platform.ProcessAlive(pid) && time.Now().Before(deadline) {
+				time.Sleep(200 * time.Millisecond)
+			}
+		}
+	}
+	// 再留一点时间给监听端口释放。
+	time.Sleep(400 * time.Millisecond)
 
 	wd, _ := os.Getwd()
 	for attempt := 1; attempt <= 15; attempt++ {
@@ -330,7 +345,7 @@ func RunRestartHelper(log *slog.Logger) error {
 		select {
 		case err := <-done:
 			log.Warn("新版本启动后退出，准备重试", "err", err, "attempt", attempt)
-			time.Sleep(time.Second)
+			time.Sleep(2 * time.Second)
 		case <-time.After(4 * time.Second):
 			return nil
 		}
