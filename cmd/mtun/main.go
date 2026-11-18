@@ -54,6 +54,7 @@ func run(args []string, logger *slog.Logger) error {
 		if err != nil {
 			return err
 		}
+		applyUpdateRepo(cfg)
 		ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 		defer stop()
 		return app.RunServer(ctx, cfg, *cfgPath, logger)
@@ -66,6 +67,7 @@ func run(args []string, logger *slog.Logger) error {
 		if err != nil {
 			return err
 		}
+		applyUpdateRepo(cfg)
 		ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 		defer stop()
 		return app.RunClient(ctx, cfg, *cfgPath, logger)
@@ -152,10 +154,13 @@ func usage() {
   mtun rule delete -name 名称 [-c 客户端配置]
 
 其他:
-  mtun update [-check]   从 GitHub 在线更新（不修改配置文件）
+  mtun update [-check] [-c 配置文件]   从 GitHub 在线更新（不修改配置文件）
   mtun web         打开本地控制台（服务端 10004，客户端 10005）
   mtun service     输出当前平台的服务安装说明
   mtun version     输出版本
+
+在线更新仓库（owner/name）按以下优先级确定：
+  环境变量 MTUN_UPDATE_REPO > 配置文件 update_repo > 构建注入的 version.Repo
 
 终端管理命令使用 <配置文件>.apitoken（0600）作为本机 API 凭据；
 未指定 -url 时按 -c 配置中的 dashboard 或 10004/10005 自动探测。
@@ -465,11 +470,31 @@ func runConnect(args []string) error {
 	return nil
 }
 
+// applyUpdateRepo 把配置中的 update_repo 注入环境变量，
+// 供本进程内的在线更新读取；已显式设置的环境变量保持更高优先级。
+func applyUpdateRepo(cfg *config.Config) {
+	repo := strings.TrimSpace(cfg.UpdateRepo)
+	if repo == "" {
+		return
+	}
+	if strings.TrimSpace(os.Getenv("MTUN_UPDATE_REPO")) != "" {
+		return
+	}
+	_ = os.Setenv("MTUN_UPDATE_REPO", repo)
+}
+
 // runUpdate 从 GitHub Release 检查并更新当前程序。
 func runUpdate(args []string, logger *slog.Logger) error {
 	fs := flag.NewFlagSet("update", flag.ExitOnError)
 	checkOnly := fs.Bool("check", false, "只检查是否有新版本")
+	cfgPath := fs.String("c", "", "配置文件路径，用于读取 update_repo（可选）")
 	_ = fs.Parse(args)
+
+	if *cfgPath != "" {
+		if repo := config.ReadUpdateRepo(*cfgPath); repo != "" {
+			_ = os.Setenv("MTUN_UPDATE_REPO", repo)
+		}
+	}
 
 	u := selfupdate.New(logger)
 	if u.Repo == "" {

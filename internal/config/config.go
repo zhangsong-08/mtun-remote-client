@@ -21,19 +21,22 @@ const (
 )
 
 type Config struct {
-	Role      Role      `yaml:"role"`
-	Node      string    `yaml:"node"`
-	Server    string    `yaml:"server"`
-	Control   string    `yaml:"control"`
-	WG        string    `yaml:"wg"`
-	Relay     string    `yaml:"relay"`
-	STUN      string    `yaml:"stun"`
-	Dashboard string    `yaml:"dashboard"`
-	Panel     Panel     `yaml:"panel"`
-	Overlay   Overlay   `yaml:"overlay"`
-	Publish   Publish   `yaml:"publish"`
-	Routes    []string  `yaml:"routes"`
-	ACL       []ACLRule `yaml:"acl"`
+	Role      Role   `yaml:"role"`
+	Node      string `yaml:"node"`
+	Server    string `yaml:"server"`
+	Control   string `yaml:"control"`
+	WG        string `yaml:"wg"`
+	Relay     string `yaml:"relay"`
+	STUN      string `yaml:"stun"`
+	Dashboard string `yaml:"dashboard"`
+	// UpdateRepo 是在线更新所用的 GitHub 仓库（owner/name）。
+	// 留空时回退到构建注入的 version.Repo 或环境变量 MTUN_UPDATE_REPO。
+	UpdateRepo string    `yaml:"update_repo"`
+	Panel      Panel     `yaml:"panel"`
+	Overlay    Overlay   `yaml:"overlay"`
+	Publish    Publish   `yaml:"publish"`
+	Routes     []string  `yaml:"routes"`
+	ACL        []ACLRule `yaml:"acl"`
 }
 
 // Panel 是管理面板的偏好设置，保存后需重启面板生效。
@@ -91,6 +94,21 @@ func ReadDashboard(path string) string {
 		return ""
 	}
 	return strings.TrimSpace(partial.Dashboard)
+}
+
+// ReadUpdateRepo 只读取配置文件中的 update_repo，供命令行更新检查使用。
+func ReadUpdateRepo(path string) string {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return ""
+	}
+	var partial struct {
+		UpdateRepo string `yaml:"update_repo"`
+	}
+	if err := yaml.Unmarshal(data, &partial); err != nil {
+		return ""
+	}
+	return strings.TrimSpace(partial.UpdateRepo)
 }
 
 // Save 原子写回配置文件（客户端控制台修改服务端/规则后调用）。
@@ -154,6 +172,25 @@ func ValidateJoinPassword(password string) error {
 // cleanPassword 去掉首尾空白与编辑器可能写入的 UTF-8 BOM。
 func cleanPassword(s string) string {
 	return strings.TrimSpace(strings.TrimPrefix(s, "\ufeff"))
+}
+
+// ValidateUpdateRepo 校验在线更新仓库地址，要求形如 owner/name。
+func ValidateUpdateRepo(repo string) error {
+	repo = strings.TrimSpace(repo)
+	if repo == "" {
+		return nil
+	}
+	if strings.ContainsAny(repo, " \t\r\n") {
+		return fmt.Errorf("update_repo 不能包含空白字符")
+	}
+	if strings.HasPrefix(repo, "http://") || strings.HasPrefix(repo, "https://") {
+		return fmt.Errorf("update_repo 应为 owner/name，不要带协议前缀")
+	}
+	parts := strings.Split(repo, "/")
+	if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
+		return fmt.Errorf("update_repo 格式应为 owner/name，例如 zhangsong-08/mtun")
+	}
+	return nil
 }
 
 // ValidateRule 校验客户端添加的转发规则。
@@ -238,6 +275,11 @@ func (c *Config) validate(want Role) error {
 	}
 	if want == RoleClient && c.Node == "" {
 		return fmt.Errorf("node is required for client")
+	}
+	if c.UpdateRepo != "" {
+		if err := ValidateUpdateRepo(c.UpdateRepo); err != nil {
+			return err
+		}
 	}
 	if c.Dashboard != "" {
 		if err := validateLoopback(c.Dashboard); err != nil {
