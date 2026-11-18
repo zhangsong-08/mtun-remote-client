@@ -26,7 +26,7 @@ func RunServer(ctx context.Context, cfg *config.Config, cfgPath string, log *slo
 	}
 
 	reg := state.New(cfg.Overlay.ServerIP, cfg.Overlay.CIDR)
-	tunnels := tunnel.NewManager(log)
+	tunnels := tunnel.NewManager(log, cfg.Publish.PortRange)
 	webSrv, err := web.New(cfg, reg, tunnels, version.Version, cfgPath, log)
 	if err != nil {
 		return err

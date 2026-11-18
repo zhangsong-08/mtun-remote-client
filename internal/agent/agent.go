@@ -67,6 +67,12 @@ func New(cfg *config.Config, cfgPath, joinPass, version string, log *slog.Logger
 }
 
 func (a *Agent) Run(ctx context.Context) error {
+	backoff := time.Second
+	const maxBackoff = 30 * time.Second
+	const resetAfter = time.Minute
+
+	var lastSuccess time.Time
+
 	for {
 		if ctx.Err() != nil {
 			return nil
@@ -79,12 +85,14 @@ func (a *Agent) Run(ctx context.Context) error {
 			if !a.waitRestart(ctx) {
 				return nil
 			}
+			backoff = time.Second
 			continue
 		case token == "":
 			a.setDown("尚未配置接入密码，请在本机控制台添加")
 			if !a.waitRestart(ctx) {
 				return nil
 			}
+			backoff = time.Second
 			continue
 		}
 
@@ -101,22 +109,39 @@ func (a *Agent) Run(ctx context.Context) error {
 		case <-a.restart:
 			cancel()
 			<-done
+			backoff = time.Second // 配置变更后立即重连
 			continue
 		case err := <-done:
 			cancel()
 			if err != nil {
 				a.setDown(err.Error())
-				a.log.Warn("控制面连接中断", "err", err)
+				a.log.Warn("控制面连接中断（指数退避重连）", "err", err, "backoff", backoff)
 			} else {
 				a.setDown("连接已断开")
+			}
+			// 上次成功连接已过去一段时间，重置退避
+			if !lastSuccess.IsZero() && time.Since(lastSuccess) > resetAfter {
+				backoff = time.Second
+			}
+			if a.up {
+				lastSuccess = time.Now()
+				backoff = time.Second // 刚连上又断，重置
+			} else {
+				// 指数退避 + 抖动
+				if backoff < maxBackoff {
+					backoff *= 2
+					if backoff > maxBackoff {
+						backoff = maxBackoff
+					}
+				}
 			}
 			select {
 			case <-ctx.Done():
 				return nil
 			case <-a.restart:
+				backoff = time.Second
 				continue
-			case <-time.After(3 * time.Second):
-				continue
+			case <-time.After(backoff):
 			}
 		}
 	}

@@ -139,7 +139,12 @@ func (s *Server) handle(ctx context.Context, conn net.Conn) {
 				Publish:   msg.Publish,
 				Now:       time.Now(),
 			})
-			statuses := s.tunnels.Register(msg.NodeID, sess, msg.Publish)
+			statuses, err := s.tunnels.Register(msg.NodeID, sess, msg.Publish)
+			if err != nil {
+				s.log.Warn("register rejected", "node", msg.NodeID, "from", remote, "err", err)
+				_ = proto.Send(enc, proto.TypeError, proto.Error{Message: err.Error()})
+				return
+			}
 			s.log.Info("node registered", "node", msg.NodeID, "from", remote, "rules", len(msg.Publish))
 			if err := s.sendStatus(enc, msg.NodeID, statuses); err != nil {
 				return

@@ -29,12 +29,12 @@ var assets embed.FS
 const loginAssetPath = "/__mtun/style.css"
 
 const (
-	sessionTTL        = 12 * time.Hour
-	sessionIdle       = 30 * time.Minute
-	maxLoginFailures  = 5
-	loginLock         = 30 * time.Second
-	minPasswordLength = 8
-	pbkdf2Iterations  = 210000
+	defaultSessionIdle = 30 * time.Minute
+	maxLoginFailures   = 5
+	loginLock          = 30 * time.Second
+	minPasswordLength  = 8
+	pbkdf2Iterations   = 210000
+	sessionCleanupInt  = 10 * time.Minute // 过期 session 清理周期
 )
 
 const passwordAlgo = "pbkdf2-sha256"
@@ -70,6 +70,8 @@ type Options struct {
 	AllowSetup bool
 	// SessionTTL 是登录会话的绝对有效期，<=0 时使用默认 12 小时。
 	SessionTTL time.Duration
+	// SessionIdle 是登录会话的空闲超时，<=0 时使用默认 30 分钟。
+	SessionIdle time.Duration
 }
 
 // Auth 提供管理面的回环 Host 校验、安全响应头、账号密码登录与会话。
@@ -78,24 +80,32 @@ type Auth struct {
 	opts     Options
 	apiToken string
 	ttl      time.Duration
+	idle     time.Duration
 
 	mu       sync.Mutex
 	creds    *passwordFile
 	sessions map[string]session
 	failures int
 	lockedTo time.Time
+	stopGC   chan struct{}
 }
 
 func NewAuth(log *slog.Logger, opt Options) (*Auth, error) {
 	ttl := opt.SessionTTL
 	if ttl <= 0 {
-		ttl = sessionTTL
+		ttl = 12 * time.Hour
+	}
+	idle := opt.SessionIdle
+	if idle <= 0 {
+		idle = defaultSessionIdle
 	}
 	a := &Auth{
 		log:      log,
 		opts:     opt,
 		ttl:      ttl,
+		idle:     idle,
 		sessions: map[string]session{},
+		stopGC:   make(chan struct{}),
 	}
 
 	creds, err := readPasswordFile(opt.PasswordFile)
@@ -115,7 +125,41 @@ func NewAuth(log *slog.Logger, opt Options) (*Auth, error) {
 		return nil, err
 	}
 	a.apiToken = token
+
+	// 启动后台 session 清理，防止长时间运行积累无效会话
+	go a.sessionGC()
+
 	return a, nil
+}
+
+// sessionGC 定期清理过期 session，每 sessionCleanupInt 运行一次。
+func (a *Auth) sessionGC() {
+	ticker := time.NewTicker(sessionCleanupInt)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-a.stopGC:
+			return
+		case <-ticker.C:
+			a.mu.Lock()
+			now := time.Now()
+			for sid, s := range a.sessions {
+				if now.After(s.expires) || now.Sub(s.lastSeen) > a.idle {
+					delete(a.sessions, sid)
+				}
+			}
+			a.mu.Unlock()
+		}
+	}
+}
+
+// Close 停止后台清理。
+func (a *Auth) Close() {
+	select {
+	case <-a.stopGC:
+	default:
+		close(a.stopGC)
+	}
 }
 
 // SetPasswordFile 写入管理密码哈希，供终端命令在服务未运行时设置密码。
@@ -413,7 +457,7 @@ func (a *Auth) authenticated(r *http.Request) bool {
 	if !ok {
 		return false
 	}
-	if now.After(s.expires) || now.Sub(s.lastSeen) > sessionIdle {
+	if now.After(s.expires) || now.Sub(s.lastSeen) > a.idle {
 		delete(a.sessions, cookie.Value)
 		return false
 	}
@@ -445,7 +489,7 @@ func (a *Auth) recordSuccess() {
 	a.failures = 0
 	a.lockedTo = time.Time{}
 	for sid, s := range a.sessions {
-		if now.After(s.expires) || now.Sub(s.lastSeen) > sessionIdle {
+		if now.After(s.expires) || now.Sub(s.lastSeen) > a.idle {
 			delete(a.sessions, sid)
 		}
 	}

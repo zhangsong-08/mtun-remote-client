@@ -207,13 +207,13 @@ func (s *Server) handlePanelRestart(w http.ResponseWriter, r *http.Request) {
 }
 
 // restartDashboard 关闭旧监听后按最新配置重新启动管理面板。
-// 配置监听失败时会尝试恢复原地址，避免面板彻底不可用。
+// 新地址绑定失败时自动恢复原地址，避免面板彻底不可用。
 func (s *Server) restartDashboard() error {
 	s.mu.Lock()
-	defer s.mu.Unlock()
 
 	cfg, err := config.Load(s.cfgPath, config.RoleServer)
 	if err != nil {
+		s.mu.Unlock()
 		return fmt.Errorf("重新读取配置失败: %w", err)
 	}
 	auth, err := webx.NewAuth(s.log, webx.Options{
@@ -225,32 +225,52 @@ func (s *Server) restartDashboard() error {
 		SessionTTL:   time.Duration(cfg.Panel.SessionMinutes) * time.Minute,
 	})
 	if err != nil {
+		s.mu.Unlock()
 		return err
 	}
 
 	oldAddr := s.cfg.Dashboard
-	if s.httpSrv != nil {
+	oldSrv := s.httpSrv
+
+	// 先关闭旧 HTTP server（异步 Shutdown）
+	if oldSrv != nil {
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-		_ = s.httpSrv.Shutdown(shutdownCtx)
-		cancel()
+		go func() {
+			_ = oldSrv.Shutdown(shutdownCtx)
+			cancel()
+		}()
 	}
 
-	ln, err := net.Listen("tcp", cfg.Dashboard)
+	// 锁外尝试绑定新地址
+	s.mu.Unlock()
+	var newLn net.Listener
+	if cfg.Dashboard != oldAddr || true { // 总尝试用新配置 listener
+		newLn, err = net.Listen("tcp", cfg.Dashboard)
+	}
 	if err != nil {
-		// 新地址绑定失败时恢复原地址，避免面板无法访问。
-		if reln, relErr := net.Listen("tcp", oldAddr); relErr == nil {
-			srv := s.newHTTPServer()
-			s.httpSrv = srv
-			go s.serve(srv, reln)
+		// 新地址绑定失败，尝试恢复原地址
+		reln, relErr := net.Listen("tcp", oldAddr)
+		if relErr != nil {
+			// 两个地址都绑不上，放弃
+			if auth != nil {
+				auth.Close()
+			}
+			return fmt.Errorf("监听 %s 失败且无法恢复 %s: %w", cfg.Dashboard, oldAddr, err)
 		}
-		return fmt.Errorf("监听 %s 失败: %w", cfg.Dashboard, err)
+		// 用恢复的 listener
+		newLn = reln
+		cfg.Dashboard = oldAddr
+		s.log.Warn("新面板地址绑定失败，已恢复原地址", "new", cfg.Dashboard, "old", oldAddr)
 	}
 
+	s.mu.Lock()
 	s.cfg = cfg
 	s.auth = auth
 	srv := s.newHTTPServer()
 	s.httpSrv = srv
-	go s.serve(srv, ln)
+	s.mu.Unlock()
+
+	go s.serve(srv, newLn)
 	s.log.Info("面板已重启", "addr", cfg.Dashboard, "session_minutes", cfg.Panel.SessionMinutes)
 	return nil
 }

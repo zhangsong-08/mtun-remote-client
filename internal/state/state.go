@@ -43,11 +43,12 @@ type Stats struct {
 
 // Registry 是服务端的内存节点表。正式版替换为持久化存储。
 type Registry struct {
-	mu      sync.RWMutex
-	nodes   map[string]*Node
-	prefix  netip.Prefix
-	nextIP  netip.Addr
-	started time.Time
+	mu       sync.RWMutex
+	nodes    map[string]*Node
+	usedIPs  map[string]struct{} // O(1) IP 占用检查
+	prefix   netip.Prefix
+	nextIP   netip.Addr
+	started  time.Time
 }
 
 func New(serverIP, cidr string) *Registry {
@@ -61,6 +62,7 @@ func New(serverIP, cidr string) *Registry {
 	}
 	return &Registry{
 		nodes:   map[string]*Node{},
+		usedIPs: map[string]struct{}{base.String(): {}},
 		prefix:  prefix,
 		nextIP:  base.Next(),
 		started: time.Now(),
@@ -160,22 +162,17 @@ func (r *Registry) copyLocked(n *Node) Node {
 
 func (r *Registry) allocateLocked() string {
 	ip := r.nextIP
-	for {
+	for i := 0; i < 4096; i++ { // 最多扫描 4096 次，避免死循环
 		if !r.prefix.Contains(ip) {
-			ip = r.prefix.Addr().Next()
+			ip = r.prefix.Addr()
 		}
-		used := false
-		for _, n := range r.nodes {
-			if n.OverlayIP == ip.String() {
-				used = true
-				break
-			}
-		}
-		if !used {
+		if _, used := r.usedIPs[ip.String()]; !used {
 			break
 		}
 		ip = ip.Next()
 	}
+	s := ip.String()
+	r.usedIPs[s] = struct{}{}
 	r.nextIP = ip.Next()
-	return ip.String()
+	return s
 }

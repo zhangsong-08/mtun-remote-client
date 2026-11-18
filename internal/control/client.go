@@ -81,8 +81,9 @@ func (c *Client) Run(ctx context.Context) error {
 	}
 	c.log.Info("已连接服务端", "server", c.server, "node", c.nodeID, "rules", len(c.rules))
 
+	rejected := make(chan string, 1)
 	go c.acceptDataStreams(sess)
-	go c.readStatus(dec)
+	go c.readStatus(dec, rejected)
 
 	ticker := time.NewTicker(10 * time.Second)
 	defer ticker.Stop()
@@ -90,6 +91,8 @@ func (c *Client) Run(ctx context.Context) error {
 		select {
 		case <-ctx.Done():
 			return nil
+		case reason := <-rejected:
+			return fmt.Errorf("服务端已断开: %s", reason)
 		case <-ticker.C:
 			if err := proto.Send(enc, proto.TypeHeartbeat, proto.Heartbeat{NodeID: c.nodeID, Path: "relay"}); err != nil {
 				return fmt.Errorf("发送心跳失败: %w", err)
@@ -98,7 +101,7 @@ func (c *Client) Run(ctx context.Context) error {
 	}
 }
 
-func (c *Client) readStatus(dec *json.Decoder) {
+func (c *Client) readStatus(dec *json.Decoder, rejected chan<- string) {
 	for {
 		env, err := proto.Receive(dec)
 		if err != nil {
@@ -108,6 +111,12 @@ func (c *Client) readStatus(dec *json.Decoder) {
 			var e proto.Error
 			if err := json.Unmarshal(env.Payload, &e); err == nil && e.Message != "" {
 				c.log.Warn("服务端拒绝连接", "reason", e.Message)
+				// 如果是注册阶段被拒绝，通知主循环退出，让 agent 进入重连流程
+				select {
+				case rejected <- e.Message:
+				default:
+				}
+				return
 			}
 			continue
 		}
@@ -125,13 +134,27 @@ func (c *Client) readStatus(dec *json.Decoder) {
 	}
 }
 
+const maxConcurrentStreams = 256 // 同时处理的数据流上限，防止 goroutine 爆炸
+
 func (c *Client) acceptDataStreams(sess *yamux.Session) {
+	sem := make(chan struct{}, maxConcurrentStreams)
 	for {
 		stream, err := sess.AcceptStream()
 		if err != nil {
 			return
 		}
-		go c.handleDataStream(stream)
+		select {
+		case sem <- struct{}{}:
+		default:
+			// 超过上限直接关闭，等新连接再试
+			_ = stream.Close()
+			c.log.Warn("数据流并发数超过限制，已丢弃")
+			continue
+		}
+		go func() {
+			defer func() { <-sem }()
+			c.handleDataStream(stream)
+		}()
 	}
 }
 

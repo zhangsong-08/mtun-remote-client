@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"log/slog"
 	"net"
+	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -16,10 +18,11 @@ import (
 // Manager 在服务端为每个客户端的每条规则监听公网端口。
 // 外部连接到来时通过该客户端自己的 yamux 会话开一条数据流。
 type Manager struct {
-	log    *slog.Logger
-	mu     sync.Mutex
-	nodes  map[string]*node
-	banned map[string]time.Time
+	log       *slog.Logger
+	mu        sync.Mutex
+	nodes     map[string]*node
+	banned    map[string]time.Time
+	portRange [2]int // [low, high]，0 表示不限制
 }
 
 type node struct {
@@ -36,8 +39,62 @@ type rule struct {
 	msg   string
 }
 
-func NewManager(log *slog.Logger) *Manager {
-	return &Manager{log: log, nodes: map[string]*node{}, banned: map[string]time.Time{}}
+func NewManager(log *slog.Logger, portRange string) *Manager {
+	m := &Manager{log: log, nodes: map[string]*node{}, banned: map[string]time.Time{}}
+	if lo, hi, err := parsePortRange(portRange); err == nil {
+		m.portRange = [2]int{lo, hi}
+	}
+	return m
+}
+
+// parsePortRange 解析 "10100-10999" 格式的端口范围。
+func parsePortRange(s string) (int, int, error) {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return 0, 0, nil
+	}
+	parts := strings.SplitN(s, "-", 2)
+	if len(parts) != 2 {
+		return 0, 0, fmt.Errorf("port_range 格式应为 low-high，例如 10100-10999")
+	}
+	lo, err := strconv.Atoi(strings.TrimSpace(parts[0]))
+	if err != nil {
+		return 0, 0, fmt.Errorf("port_range 下限非法: %w", err)
+	}
+	hi, err := strconv.Atoi(strings.TrimSpace(parts[1]))
+	if err != nil {
+		return 0, 0, fmt.Errorf("port_range 上限非法: %w", err)
+	}
+	if lo <= 0 || hi > 65535 || lo > hi {
+		return 0, 0, fmt.Errorf("port_range %d-%d 非法", lo, hi)
+	}
+	return lo, hi, nil
+}
+
+// validateRules 检查客户端上报的规则是否满足端口范围和跨节点不冲突约束。
+func (m *Manager) validateRules(newNodeID string, specs []proto.PublishRule) error {
+	// 1. 端口范围校验
+	for _, s := range specs {
+		if m.portRange[0] > 0 && (s.Listen < m.portRange[0] || s.Listen > m.portRange[1]) {
+			return fmt.Errorf("规则 %q 端口 %d 不在服务端允许范围 %d-%d 内",
+				s.Name, s.Listen, m.portRange[0], m.portRange[1])
+		}
+	}
+	// 2. 跨节点端口冲突检测（跳过自己）
+	for id, n := range m.nodes {
+		if id == newNodeID {
+			continue
+		}
+		for _, existing := range n.specs {
+			for _, incoming := range specs {
+				if existing.Listen == incoming.Listen {
+					return fmt.Errorf("公网端口 %d 已被节点 %s 的规则 %q 占用",
+						incoming.Listen, id, existing.Name)
+				}
+			}
+		}
+	}
+	return nil
 }
 
 // Kick 强制断开节点当前会话，并在 banFor 时间内拒绝其重新注册。
@@ -79,9 +136,14 @@ func (m *Manager) Banned(id string) bool {
 }
 
 // Register 绑定节点会话并按新规则列表调整监听，返回该节点自己的规则状态。
-func (m *Manager) Register(id string, sess *yamux.Session, specs []proto.PublishRule) []proto.RuleStatus {
+// 校验失败会返回 error，此时节点不会生效。
+func (m *Manager) Register(id string, sess *yamux.Session, specs []proto.PublishRule) ([]proto.RuleStatus, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+
+	if err := m.validateRules(id, specs); err != nil {
+		return nil, err
+	}
 
 	n, ok := m.nodes[id]
 	if !ok {
@@ -93,7 +155,7 @@ func (m *Manager) Register(id string, sess *yamux.Session, specs []proto.Publish
 	n.sess = sess
 	n.specs = append([]proto.PublishRule(nil), specs...)
 	n.reconcile()
-	return n.statuses()
+	return n.statuses(), nil
 }
 
 // Statuses 返回节点当前的规则状态（心跳时回包用）。
