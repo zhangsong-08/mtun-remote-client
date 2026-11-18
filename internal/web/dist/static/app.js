@@ -482,7 +482,6 @@ $("rule-next").addEventListener("click", () => {
 $("btn-check").addEventListener("click", loadUpdate);
 $("btn-update").addEventListener("click", applyUpdate);
 $("btn-restart").addEventListener("click", restartPanel);
-$("btn-restart-panel").addEventListener("click", restartPanel);
 $("btn-toggle-ip").addEventListener("click", () => {
   state.ipVisible = !state.ipVisible;
   $("btn-toggle-ip").textContent = state.ipVisible ? "隐藏" : "显示";
