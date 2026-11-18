@@ -43,12 +43,12 @@ type Stats struct {
 
 // Registry 是服务端的内存节点表。正式版替换为持久化存储。
 type Registry struct {
-	mu       sync.RWMutex
-	nodes    map[string]*Node
-	usedIPs  map[string]struct{} // O(1) IP 占用检查
-	prefix   netip.Prefix
-	nextIP   netip.Addr
-	started  time.Time
+	mu      sync.RWMutex
+	nodes   map[string]*Node
+	usedIPs map[string]struct{} // O(1) IP 占用检查
+	prefix  netip.Prefix
+	nextIP  netip.Addr
+	started time.Time
 }
 
 func New(serverIP, cidr string) *Registry {

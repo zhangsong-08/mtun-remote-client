@@ -2,6 +2,14 @@
 
 package platform
 
+import "syscall"
+
+// DetachProcAttr 在 Linux 下通过独立会话脱离父进程；
+// 忽略 breakaway 参数（该概念仅 Windows 作业对象需要）。
+func DetachProcAttr(bool) *syscall.SysProcAttr {
+	return &syscall.SysProcAttr{Setsid: true}
+}
+
 func ConfigDir() string { return "/etc/mtun" }
 
 func DataDir() string { return "/var/lib/mtun" }

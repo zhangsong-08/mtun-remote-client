@@ -21,6 +21,7 @@ import (
 	"strings"
 	"time"
 
+	"mtun/internal/platform"
 	"mtun/internal/version"
 )
 
@@ -265,18 +266,31 @@ func CleanupOld() {
 }
 
 // ScheduleRestart 启动一个等待旧进程退出的助手进程，由它拉起新版本。
+// 助手必须脱离当前进程的控制台与作业对象（Job），否则主进程退出时
+// 会被系统连带清理，导致新版本永远不会被拉起。
 func ScheduleRestart(exe string, log *slog.Logger) error {
 	raw, err := json.Marshal(os.Args[1:])
 	if err != nil {
 		return fmt.Errorf("序列化启动参数失败: %w", err)
 	}
-	cmd := exec.Command(exe, "__restart")
-	cmd.Env = append(os.Environ(), "MTUN_RESTART_ARGS_JSON="+string(raw))
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
-	cmd.Stdin = os.Stdin
-	if err := cmd.Start(); err != nil {
-		return fmt.Errorf("启动重启助手失败: %w", err)
+	env := append(os.Environ(), "MTUN_RESTART_ARGS_JSON="+string(raw))
+
+	start := func(detach bool) error {
+		cmd := exec.Command(exe, "__restart")
+		cmd.Env = env
+		cmd.Stdout = os.Stdout
+		cmd.Stderr = os.Stderr
+		cmd.Stdin = os.Stdin
+		cmd.SysProcAttr = platform.DetachProcAttr(detach)
+		return cmd.Start()
+	}
+
+	if err := start(true); err != nil {
+		// 作业对象未授予 BREAKAWAY 权限时退回仅脱离控制台，避免完全不重启。
+		log.Warn("重启助手脱离作业对象失败，改用降级方式", "err", err)
+		if err2 := start(false); err2 != nil {
+			return fmt.Errorf("启动重启助手失败: %w", err2)
+		}
 	}
 	log.Info("已安排自动重启", "exe", exe)
 	return nil
@@ -295,14 +309,17 @@ func RunRestartHelper(log *slog.Logger) error {
 	if err != nil {
 		return err
 	}
-	time.Sleep(1500 * time.Millisecond)
+	// 旧进程通常已开始退出，短暂等待即可；端口可能仍有 TIME_WAIT 残留。
+	time.Sleep(800 * time.Millisecond)
 
-	for attempt := 1; attempt <= 10; attempt++ {
+	wd, _ := os.Getwd()
+	for attempt := 1; attempt <= 15; attempt++ {
 		cmd := exec.Command(exe, args...)
 		cmd.Stdout = os.Stdout
 		cmd.Stderr = os.Stderr
 		cmd.Stdin = os.Stdin
-		cmd.Dir, _ = os.Getwd()
+		cmd.Dir = wd
+		cmd.SysProcAttr = platform.DetachProcAttr(false)
 		if err := cmd.Start(); err != nil {
 			log.Warn("重启新版本失败，准备重试", "err", err, "attempt", attempt)
 			time.Sleep(time.Second)

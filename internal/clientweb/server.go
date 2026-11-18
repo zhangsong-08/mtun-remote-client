@@ -122,14 +122,17 @@ func (s *Server) handleUpdate(w http.ResponseWriter, r *http.Request) {
 			webx.WriteError(w, http.StatusInternalServerError, err)
 			return
 		}
+		// 先确认重启助手能启动；失败时保留当前进程，避免服务直接消失。
+		if err := selfupdate.ScheduleRestart(exe, s.log); err != nil {
+			webx.WriteError(w, http.StatusInternalServerError, fmt.Errorf(
+				"已更新到 %s，但自动重启失败：%v；请手动重启客户端（程序文件已是新版本）", rel.Version, err))
+			return
+		}
 		webx.WriteJSON(w, map[string]any{
 			"updated": true, "from": u.Current, "to": rel.Version, "restarting": true,
 		})
 		go func() {
 			time.Sleep(time.Second)
-			if err := selfupdate.ScheduleRestart(exe, s.log); err != nil {
-				s.log.Error("自动重启失败", "err", err)
-			}
 			os.Exit(0)
 		}()
 	default:
