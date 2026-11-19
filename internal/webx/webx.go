@@ -618,8 +618,11 @@ func allowedOrigin(r *http.Request) bool {
 	case http.MethodGet, http.MethodHead, http.MethodOptions:
 		return true
 	}
-	origin := r.Header.Get("Origin")
-	if origin == "" {
+	origin := strings.TrimSpace(r.Header.Get("Origin"))
+	// 空 Origin（命令行客户端）与 "null"（浏览器在 file://、沙箱 iframe、
+	// 部分内嵌浏览器/隐私模式下发送的字面量）都视为无来源放行。
+	// 会话 Cookie 为 SameSite=Strict，跨站请求不会携带凭据，风险可控。
+	if origin == "" || strings.EqualFold(origin, "null") {
 		return true
 	}
 	// 浏览器通过代理/端口转发访问时，Origin 可能不是回环地址，

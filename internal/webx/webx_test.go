@@ -246,6 +246,8 @@ func TestAllowedOrigin(t *testing.T) {
 	}{
 		{name: "读请求直接放行", method: http.MethodGet, host: "1.2.3.4:10004", origin: "https://evil.com", want: true},
 		{name: "命令行无 Origin", method: http.MethodPost, host: "1.2.3.4:10004", want: true},
+		{name: "Origin 为 null", method: http.MethodPost, host: "1.2.3.4:10004", origin: "null", want: true},
+		{name: "Origin 为 NULL 大写", method: http.MethodPost, host: "1.2.3.4:10004", origin: "NULL", want: true},
 		{name: "同源直连", method: http.MethodPost, host: "1.2.3.4:10004", origin: "http://1.2.3.4:10004", want: true},
 		{name: "浏览器同源标记", method: http.MethodPost, host: "1.2.3.4:10004", origin: "http://1.2.3.4:10004", sfs: "same-origin", want: true},
 		{name: "反代保留外部 Host", method: http.MethodPost, host: "127.0.0.1:10004", origin: "https://panel.example.com", fwdHost: "panel.example.com", want: true},
