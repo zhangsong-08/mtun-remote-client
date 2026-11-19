@@ -61,6 +61,13 @@ type ACLRule struct {
 	Ports []int  `yaml:"ports"`
 }
 
+// DefaultYAML 返回指定角色的默认配置（YAML 文本），供 mtun default 生成初始配置。
+func DefaultYAML(want Role) ([]byte, error) {
+	c := &Config{}
+	c.applyDefaults(want)
+	return yaml.Marshal(c)
+}
+
 // Load 读取配置并按角色补齐默认值。want 决定默认 dashboard 与管理面校验。
 func Load(path string, want Role) (*Config, error) {
 	data, err := os.ReadFile(path)

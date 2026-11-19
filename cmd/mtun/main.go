@@ -114,6 +114,12 @@ func run(args []string, logger *slog.Logger) error {
 	case "update":
 		return runUpdate(args[1:], logger)
 
+	case "default":
+		return runDefault(args[1:])
+
+	case "check":
+		return runCheck(args[1:])
+
 	case "__restart":
 		return selfupdate.RunRestartHelper(logger)
 
@@ -154,6 +160,8 @@ func usage() {
   mtun rule delete -name 名称 [-c 客户端配置]
 
 其他:
+  mtun default server|client          输出默认配置（安装脚本使用）
+  mtun check -c 配置文件 [-role server|client]   校验配置是否有效
   mtun update [-check] [-c 配置文件]   从 GitHub 在线更新（不修改配置文件）
   mtun web         打开本地控制台（服务端 10004，客户端 10005）
   mtun service     输出当前平台的服务安装说明
@@ -467,6 +475,50 @@ func runConnect(args []string) error {
 		return err
 	}
 	fmt.Println("已保存服务端配置，客户端将自动重连；可用 mtun status 查看结果")
+	return nil
+}
+
+// runDefault 输出指定角色的默认配置，便于脚本生成初始配置。
+func runDefault(args []string) error {
+	role := config.RoleServer
+	if len(args) > 0 {
+		switch args[0] {
+		case "server":
+			role = config.RoleServer
+		case "client":
+			role = config.RoleClient
+		default:
+			return fmt.Errorf("用法: mtun default server|client")
+		}
+	}
+	data, err := config.DefaultYAML(role)
+	if err != nil {
+		return err
+	}
+	fmt.Print(string(data))
+	return nil
+}
+
+// runCheck 校验配置文件能否被正确加载，不启动服务。
+func runCheck(args []string) error {
+	fs := flag.NewFlagSet("check", flag.ExitOnError)
+	cfgPath := fs.String("c", "", "配置文件路径")
+	role := fs.String("role", string(config.RoleServer), "角色：server 或 client")
+	_ = fs.Parse(args)
+
+	if strings.TrimSpace(*cfgPath) == "" {
+		return errors.New("请用 -c 指定配置文件")
+	}
+	want := config.RoleServer
+	if *role == string(config.RoleClient) {
+		want = config.RoleClient
+	}
+	cfg, err := config.Load(*cfgPath, want)
+	if err != nil {
+		return err
+	}
+	fmt.Printf("配置有效\n  角色:     %s\n  控制面:   %s\n  中继:     %s\n  管理面板: %s\n  转发端口: %s\n",
+		cfg.Role, cfg.Control, cfg.Relay, cfg.Dashboard, cfg.Publish.PortRange)
 	return nil
 }
 

@@ -197,21 +197,29 @@ $SUDO chmod +x "$BIN"
 CFG="$INSTALL_DIR/configs/server.yaml"
 if [ ! -f "$CFG" ]; then
     echo "==> 生成默认配置"
+    # 优先用二进制自带的默认配置生成，保证与程序结构一致
     if ! $BIN default server > "$CFG" 2>/dev/null || [ ! -s "$CFG" ]; then
         cat > "$CFG" <<EOF
-overlay:
-  cidr: 100.64.0.0/10
-  server_ip: 100.64.0.1
-publish:
-  port_range: 10100-10999
-control:
-  addr: ":10000"
-  tls: true
-relay:
-  addr: ":10002"
+role: server
+control: ":10000"
+wg: ":10001"
+relay: ":10002"
+stun: ":10003"
 dashboard: "127.0.0.1:10004"
 update_repo: "$REPO"
+overlay:
+  cidr: "100.64.0.0/10"
+  server_ip: "100.64.0.1"
+publish:
+  port_range: "10100-10999"
 EOF
+    fi
+    # 生成后立即校验，配置有误就明确报错，避免服务反复重启
+    if ! $BIN check -c "$CFG" -role server >/dev/null 2>&1; then
+        echo "配置文件校验失败：" >&2
+        $BIN check -c "$CFG" -role server >&2 || true
+        echo "请手动修正 $CFG 后重试" >&2
+        exit 1
     fi
     echo "已生成 $CFG"
 fi
@@ -242,6 +250,9 @@ cat <<EOF | $SUDO tee "$UNIT" >/dev/null
 [Unit]
 Description=mtun server
 After=network.target
+# 启动失败时不要无限重启刷屏
+StartLimitIntervalSec=60
+StartLimitBurst=5
 
 [Service]
 Type=simple
@@ -249,8 +260,9 @@ ExecStart=$BIN server -c $CFG
 Restart=on-failure
 RestartSec=2
 WorkingDirectory=$INSTALL_DIR
-StandardOutput=append:$INSTALL_DIR/logs/server.log
-StandardError=append:$INSTALL_DIR/logs/server.err
+# 输出到 journal，systemd 219（CentOS 7）也兼容，出问题可直接 journalctl 查看
+StandardOutput=journal
+StandardError=journal
 
 [Install]
 WantedBy=multi-user.target
@@ -285,7 +297,7 @@ if systemctl is-active --quiet "$SYSTEMD_SERVICE"; then
     echo "  公网访问还需放行防火墙：10000/tcp、10100-10999/tcp"
     echo "  远程看面板：ssh -L 10004:127.0.0.1:10004 用户@服务器IP"
 else
-    echo "❌ 启动失败，查看详情：" >&2
-    echo "   journalctl -u $SYSTEMD_SERVICE -n 50" >&2
+    echo "❌ 启动失败，以下是最近日志：" >&2
+    journalctl -u "$SYSTEMD_SERVICE" -n 30 --no-pager >&2 || true
     exit 1
 fi

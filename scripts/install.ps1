@@ -177,20 +177,29 @@ Move-Item $tmp $exe -Force
 # ---------- 生成配置 ----------
 if (-not (Test-Path $cfg)) {
     Write-Host "==> 生成默认配置"
-    @'
-overlay:
-  cidr: 100.64.0.0/10
-  server_ip: 100.64.0.1
-publish:
-  port_range: 10100-10999
-control:
-  addr: ":10000"
-  tls: true
-relay:
-  addr: ":10002"
+    & $exe default server | Set-Content $cfg -Encoding utf8
+    if (-not (Test-Path $cfg) -or (Get-Item $cfg).Length -eq 0) {
+        @'
+role: server
+control: ":10000"
+wg: ":10001"
+relay: ":10002"
+stun: ":10003"
 dashboard: "127.0.0.1:10004"
 update_repo: "zhangsong-08/mtun"
+overlay:
+  cidr: "100.64.0.0/10"
+  server_ip: "100.64.0.1"
+publish:
+  port_range: "10100-10999"
 '@ | Set-Content $cfg -Encoding utf8
+    }
+    & $exe check -c $cfg -role server | Out-Null
+    if ($LASTEXITCODE -ne 0) {
+        Write-Host "配置文件校验失败，详情：" -ForegroundColor Red
+        & $exe check -c $cfg -role server
+        exit 1
+    }
 }
 
 # ---------- 接入密码 ----------
