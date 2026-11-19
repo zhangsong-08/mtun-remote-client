@@ -17,7 +17,7 @@ import (
 )
 
 // Client 使用服务端地址 + 客户端接入密码建立 TLS/yamux 会话。
-// 服务端回包只包含本节点的状态与规则。
+// 服务端回包只包含本节点的状态与规则，以及按可见性过滤后的其他节点。
 type Client struct {
 	server   string
 	token    string
@@ -25,10 +25,13 @@ type Client struct {
 	version  string
 	rules    []proto.PublishRule
 	onStatus func(proto.Status)
+	onPeers  func(proto.Peers)
+	onAcl    func(proto.AclUpdate)
 	log      *slog.Logger
 }
 
-func NewClient(server, token, nodeID, version string, rules []proto.PublishRule, onStatus func(proto.Status), log *slog.Logger) *Client {
+func NewClient(server, token, nodeID, version string, rules []proto.PublishRule,
+	onStatus func(proto.Status), onPeers func(proto.Peers), onAcl func(proto.AclUpdate), log *slog.Logger) *Client {
 	return &Client{
 		server:   server,
 		token:    token,
@@ -36,6 +39,8 @@ func NewClient(server, token, nodeID, version string, rules []proto.PublishRule,
 		version:  version,
 		rules:    rules,
 		onStatus: onStatus,
+		onPeers:  onPeers,
+		onAcl:    onAcl,
 		log:      log,
 	}
 }
@@ -71,11 +76,16 @@ func (c *Client) Run(ctx context.Context) error {
 	enc := json.NewEncoder(stream)
 	dec := json.NewDecoder(stream)
 
+	publish := c.rules
+	if publish == nil {
+		// 显式发送空数组，避免服务端把“已删除全部规则”误判为未上报。
+		publish = []proto.PublishRule{}
+	}
 	if err := proto.Send(enc, proto.TypeRegister, proto.Register{
 		NodeID:  c.nodeID,
 		Version: c.version,
 		Path:    "relay",
-		Publish: c.rules,
+		Publish: publish,
 	}); err != nil {
 		return err
 	}
@@ -121,6 +131,26 @@ func (c *Client) readStatus(dec *json.Decoder, rejected chan<- string) {
 			continue
 		}
 		if env.Type != proto.TypeStatus {
+			switch env.Type {
+			case proto.TypePeers:
+				var p proto.Peers
+				if err := json.Unmarshal(env.Payload, &p); err != nil {
+					c.log.Warn("bad peers payload", "err", err)
+					continue
+				}
+				if c.onPeers != nil {
+					c.onPeers(p)
+				}
+			case proto.TypeAclUpdate:
+				var u proto.AclUpdate
+				if err := json.Unmarshal(env.Payload, &u); err != nil {
+					c.log.Warn("bad acl payload", "err", err)
+					continue
+				}
+				if c.onAcl != nil {
+					c.onAcl(u)
+				}
+			}
 			continue
 		}
 		var st proto.Status

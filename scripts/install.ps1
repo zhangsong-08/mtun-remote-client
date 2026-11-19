@@ -42,7 +42,7 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
-$repo = "zhangsong-08/mtun"
+$repo = "zhangsong-08/mtun-remote-server"
 
 # 内置可用镜像（按顺序尝试，直连放最后）
 $mirrorList = if ($Mirror) { @($Mirror) } else { @("https://ghfast.top/", "https://gh-proxy.com/", "") }
@@ -186,7 +186,7 @@ wg: ":10001"
 relay: ":10002"
 stun: ":10003"
 dashboard: "127.0.0.1:10004"
-update_repo: "zhangsong-08/mtun"
+update_repo: "zhangsong-08/mtun-remote-server"
 overlay:
   cidr: "100.64.0.0/10"
   server_ip: "100.64.0.1"

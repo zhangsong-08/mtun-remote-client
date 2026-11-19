@@ -11,7 +11,7 @@ dashboard: "127.0.0.1:10005"
 
 # 在线更新仓库（owner/name）。留空则使用构建注入的 version.Repo；
 # 环境变量 MTUN_UPDATE_REPO 优先级最高。
-update_repo: "zhangsong-08/mtun"
+update_repo: "zhangsong-08/mtun-remote-client"
 
 # 客户端登录密码：首次打开控制台时由你自己设置，也可在终端设置：
 #   mtun passwd -c configs/client.example.yaml

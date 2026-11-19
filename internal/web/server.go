@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"mtun/internal/config"
+	"mtun/internal/control"
 	"mtun/internal/selfupdate"
 	"mtun/internal/state"
 	"mtun/internal/sysinfo"
@@ -34,6 +35,7 @@ type Server struct {
 	cfgPath string
 	reg     *state.Registry
 	tunnels *tunnel.Manager
+	ctl     *control.Server
 	version string
 	auth    *webx.Auth
 	sys     *sysinfo.Collector
@@ -44,7 +46,7 @@ type Server struct {
 	mu      sync.Mutex
 }
 
-func New(cfg *config.Config, reg *state.Registry, tunnels *tunnel.Manager, version, cfgPath string, log *slog.Logger) (*Server, error) {
+func New(cfg *config.Config, reg *state.Registry, tunnels *tunnel.Manager, ctl *control.Server, version, cfgPath string, log *slog.Logger) (*Server, error) {
 	ttl := time.Duration(cfg.Panel.SessionMinutes) * time.Minute
 	auth, err := webx.NewAuth(log, webx.Options{
 		PasswordFile: cfgPath + ".passwd",
@@ -62,6 +64,7 @@ func New(cfg *config.Config, reg *state.Registry, tunnels *tunnel.Manager, versi
 		cfgPath: cfgPath,
 		reg:     reg,
 		tunnels: tunnels,
+		ctl:     ctl,
 		version: version,
 		log:     log,
 		auth:    auth,
@@ -110,6 +113,7 @@ func (s *Server) handler() http.Handler {
 	mux.HandleFunc("/api/status", s.handleStatus)
 	mux.HandleFunc("/api/nodes", s.handleNodes)
 	mux.HandleFunc("/api/nodes/kick", s.handleKick)
+	mux.HandleFunc("/api/rules/visibility", s.handleRuleVisibility)
 	mux.HandleFunc("/api/system", s.handleSystem)
 	mux.HandleFunc("/api/panel", s.handlePanel)
 	mux.HandleFunc("/api/panel/restart", s.handlePanelRestart)
@@ -348,6 +352,45 @@ func (s *Server) handleKick(w http.ResponseWriter, r *http.Request) {
 	webx.WriteJSON(w, map[string]any{"ok": true, "node": req.ID, "ban_seconds": ban})
 }
 
+// handleRuleVisibility 修改在线节点某条规则的可见范围，并下发到该客户端落盘。
+func (s *Server) handleRuleVisibility(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		return
+	}
+	var req struct {
+		Node       string   `json:"node"`
+		Name       string   `json:"name"`
+		Visibility string   `json:"visibility"`
+		VisibleTo  []string `json:"visible_to"`
+	}
+	r.Body = http.MaxBytesReader(w, r.Body, 8<<10)
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		webx.WriteError(w, http.StatusBadRequest, errors.New("请求格式错误"))
+		return
+	}
+	req.Node = strings.TrimSpace(req.Node)
+	req.Name = strings.TrimSpace(req.Name)
+	if req.Node == "" || req.Name == "" {
+		webx.WriteError(w, http.StatusBadRequest, errors.New("缺少节点 ID 或规则名称"))
+		return
+	}
+	visibility, visibleTo, err := config.NormalizeVisibility(req.Visibility, req.VisibleTo)
+	if err != nil {
+		webx.WriteError(w, http.StatusBadRequest, err)
+		return
+	}
+	if s.ctl == nil {
+		webx.WriteError(w, http.StatusInternalServerError, errors.New("控制面未初始化"))
+		return
+	}
+	if err := s.ctl.SetRuleVisibility(req.Node, req.Name, visibility, visibleTo); err != nil {
+		webx.WriteError(w, http.StatusConflict, err)
+		return
+	}
+	webx.WriteJSON(w, map[string]any{"ok": true, "visibility": visibility, "visible_to": visibleTo})
+}
+
 // handleUpdate 支持查询与执行在线更新，更新后自动重启。
 func (s *Server) handleUpdate(w http.ResponseWriter, r *http.Request) {
 	u := selfupdate.New(s.log)
@@ -436,12 +479,14 @@ func (s *Server) nodeRules(n state.Node) []proto.RuleStatus {
 			msg = "节点离线，规则未生效"
 		}
 		out = append(out, proto.RuleStatus{
-			Name:    p.Name,
-			Proto:   p.Proto,
-			Listen:  p.Listen,
-			Target:  p.Target,
-			State:   st,
-			Message: msg,
+			Name:       p.Name,
+			Proto:      p.Proto,
+			Listen:     p.Listen,
+			Target:     p.Target,
+			State:      st,
+			Message:    msg,
+			Visibility: p.VisibilityMode(),
+			VisibleTo:  append([]string(nil), p.VisibleTo...),
 		})
 	}
 	return out

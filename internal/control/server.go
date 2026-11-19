@@ -9,6 +9,7 @@ import (
 	"io"
 	"log/slog"
 	"net"
+	"sync"
 	"time"
 
 	"github.com/hashicorp/yamux"
@@ -27,10 +28,32 @@ type Server struct {
 	reg     *state.Registry
 	tunnels *tunnel.Manager
 	log     *slog.Logger
+
+	mu    sync.Mutex
+	conns map[string]*clientConn
+}
+
+// clientConn 封装单个节点的控制流写入，避免状态回执与 peers 推送并发写同一编码器。
+type clientConn struct {
+	enc *json.Encoder
+	mu  sync.Mutex
+}
+
+func (c *clientConn) send(kind string, payload any) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return proto.Send(c.enc, kind, payload)
 }
 
 func NewServer(addr, token string, reg *state.Registry, tunnels *tunnel.Manager, log *slog.Logger) *Server {
-	return &Server{addr: addr, token: token, reg: reg, tunnels: tunnels, log: log}
+	return &Server{
+		addr:    addr,
+		token:   token,
+		reg:     reg,
+		tunnels: tunnels,
+		log:     log,
+		conns:   map[string]*clientConn{},
+	}
 }
 
 func (s *Server) Run(ctx context.Context) error {
@@ -92,15 +115,20 @@ func (s *Server) handle(ctx context.Context, conn net.Conn) {
 	defer stream.Close()
 
 	dec := json.NewDecoder(stream)
-	enc := json.NewEncoder(stream)
+	cc := &clientConn{enc: json.NewEncoder(stream)}
 
 	nodeID := ""
 	defer func() {
 		if nodeID == "" {
 			return
 		}
+		current := s.removeConn(nodeID, cc)
 		s.tunnels.Remove(nodeID, sess)
+		if current {
+			s.reg.MarkOffline(nodeID)
+		}
 		s.log.Info("node disconnected", "node", nodeID, "from", remote)
+		s.broadcastPeers()
 	}()
 
 	for {
@@ -124,7 +152,7 @@ func (s *Server) handle(ctx context.Context, conn net.Conn) {
 			}
 			if s.tunnels.Banned(msg.NodeID) {
 				s.log.Warn("reject banned node", "node", msg.NodeID, "from", remote)
-				_ = proto.Send(enc, proto.TypeError, proto.Error{Message: "节点已被管理员临时封禁，请稍后重连"})
+				_ = cc.send(proto.TypeError, proto.Error{Message: "节点已被管理员临时封禁，请稍后重连"})
 				return
 			}
 			nodeID = msg.NodeID
@@ -142,20 +170,22 @@ func (s *Server) handle(ctx context.Context, conn net.Conn) {
 			statuses, err := s.tunnels.Register(msg.NodeID, sess, msg.Publish)
 			if err != nil {
 				s.log.Warn("register rejected", "node", msg.NodeID, "from", remote, "err", err)
-				_ = proto.Send(enc, proto.TypeError, proto.Error{Message: err.Error()})
+				_ = cc.send(proto.TypeError, proto.Error{Message: err.Error()})
 				return
 			}
+			s.addConn(msg.NodeID, cc)
 			s.log.Info("node registered", "node", msg.NodeID, "from", remote, "rules", len(msg.Publish))
-			if err := s.sendStatus(enc, msg.NodeID, statuses); err != nil {
+			if err := s.sendStatus(cc, msg.NodeID, statuses); err != nil {
 				return
 			}
+			s.broadcastPeers()
 
 		case proto.TypeHeartbeat:
 			if nodeID == "" {
 				return
 			}
 			s.reg.Upsert(state.Update{ID: nodeID, Path: "relay", Now: time.Now()})
-			if err := s.sendStatus(enc, nodeID, s.tunnels.Statuses(nodeID)); err != nil {
+			if err := s.sendStatus(cc, nodeID, s.tunnels.Statuses(nodeID)); err != nil {
 				return
 			}
 
@@ -165,12 +195,12 @@ func (s *Server) handle(ctx context.Context, conn net.Conn) {
 	}
 }
 
-func (s *Server) sendStatus(enc *json.Encoder, nodeID string, rules []proto.RuleStatus) error {
+func (s *Server) sendStatus(cc *clientConn, nodeID string, rules []proto.RuleStatus) error {
 	st := proto.Status{Self: s.selfInfo(nodeID), Rules: rules}
 	if st.Rules == nil {
 		st.Rules = []proto.RuleStatus{}
 	}
-	if err := proto.Send(enc, proto.TypeStatus, st); err != nil {
+	if err := cc.send(proto.TypeStatus, st); err != nil {
 		s.log.Warn("send status", "node", nodeID, "err", err)
 		return err
 	}
@@ -183,4 +213,68 @@ func (s *Server) selfInfo(nodeID string) proto.SelfInfo {
 		return proto.SelfInfo{NodeID: nodeID, Path: "relay"}
 	}
 	return proto.SelfInfo{NodeID: n.ID, OverlayIP: n.OverlayIP, Path: n.Path}
+}
+
+func (s *Server) addConn(nodeID string, cc *clientConn) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.conns[nodeID] = cc
+}
+
+// removeConn 仅在当前连接仍是该节点的主连接时才删除，避免旧连接误删新连接。
+func (s *Server) removeConn(nodeID string, cc *clientConn) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.conns[nodeID] != cc {
+		return false
+	}
+	delete(s.conns, nodeID)
+	return true
+}
+
+func (s *Server) connFor(nodeID string) *clientConn {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.conns[nodeID]
+}
+
+// broadcastPeers 按请求者过滤后，向所有在线客户端推送节点与共享规则。
+func (s *Server) broadcastPeers() {
+	s.mu.Lock()
+	targets := make(map[string]*clientConn, len(s.conns))
+	for id, cc := range s.conns {
+		targets[id] = cc
+	}
+	s.mu.Unlock()
+
+	for id, cc := range targets {
+		if err := cc.send(proto.TypePeers, proto.Peers{Nodes: s.reg.PeersFor(id)}); err != nil {
+			s.log.Debug("push peers", "node", id, "err", err)
+		}
+	}
+}
+
+// SetRuleVisibility 修改指定节点规则的可见范围，并下发到该客户端落盘。
+// 只允许在线节点，确保客户端配置与服务端内存状态一致。
+func (s *Server) SetRuleVisibility(nodeID, name, visibility string, visibleTo []string) error {
+	cc := s.connFor(nodeID)
+	if cc == nil {
+		return fmt.Errorf("节点 %s 不在线，无法修改可见范围", nodeID)
+	}
+	if err := s.tunnels.SetVisibility(nodeID, name, visibility, visibleTo); err != nil {
+		return err
+	}
+	if err := s.reg.SetRuleVisibility(nodeID, name, visibility, visibleTo); err != nil {
+		return err
+	}
+	if err := cc.send(proto.TypeAclUpdate, proto.AclUpdate{
+		Name:       name,
+		Visibility: visibility,
+		VisibleTo:  visibleTo,
+	}); err != nil {
+		return fmt.Errorf("下发可见范围失败: %w", err)
+	}
+	s.log.Info("规则可见范围已修改", "node", nodeID, "rule", name, "visibility", visibility, "visible_to", len(visibleTo))
+	s.broadcastPeers()
+	return nil
 }

@@ -7,7 +7,7 @@
 #   sudo bash install-client.sh -u                                          # 卸载
 set -euo pipefail
 
-REPO="zhangsong-08/mtun"
+REPO="zhangsong-08/mtun-remote-client"
 VERSION=""
 INSTALL_DIR="/opt/mtun-client"
 MIRROR="${MTUN_MIRROR:-}"
@@ -218,6 +218,13 @@ EOF
     fi
     $SUDO mv "$TMP" "$CFG"
     trap - EXIT
+fi
+
+# 写入客户端专用的在线更新仓库（与服务端分仓发布）
+if grep -qE '^update_repo:' "$CFG"; then
+    $SUDO sed -i "s|^update_repo:.*|update_repo: \"$REPO\"|" "$CFG"
+else
+    printf 'update_repo: "%s"\n' "$REPO" | $SUDO tee -a "$CFG" >/dev/null
 fi
 
 # 写入服务端地址

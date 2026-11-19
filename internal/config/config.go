@@ -201,6 +201,43 @@ func ValidateUpdateRepo(repo string) error {
 	return nil
 }
 
+// NormalizeVisibility 归一化规则可见范围，返回可持久化的值。
+// 空值等价 all；nodes 模式要求至少一个节点 ID，并去重。
+func NormalizeVisibility(visibility string, visibleTo []string) (string, []string, error) {
+	switch strings.ToLower(strings.TrimSpace(visibility)) {
+	case "", proto.VisibleAll:
+		return proto.VisibleAll, nil, nil
+	case proto.VisibleSelf:
+		return proto.VisibleSelf, nil, nil
+	case proto.VisibleNodes:
+		seen := make(map[string]struct{}, len(visibleTo))
+		out := make([]string, 0, len(visibleTo))
+		for _, id := range visibleTo {
+			id = strings.TrimSpace(id)
+			if id == "" {
+				continue
+			}
+			if len(id) > 128 {
+				return "", nil, fmt.Errorf("可见节点 ID 不能超过 128 个字符")
+			}
+			if _, ok := seen[id]; ok {
+				continue
+			}
+			if len(out) >= 100 {
+				return "", nil, fmt.Errorf("可见节点不能超过 100 个")
+			}
+			seen[id] = struct{}{}
+			out = append(out, id)
+		}
+		if len(out) == 0 {
+			return "", nil, fmt.Errorf("可见范围选择“指定节点”时至少填写一个节点 ID")
+		}
+		return proto.VisibleNodes, out, nil
+	default:
+		return "", nil, fmt.Errorf("可见范围仅支持 all/self/nodes，当前为 %q", visibility)
+	}
+}
+
 // ValidateRule 校验客户端添加的转发规则。
 func ValidateRule(rule proto.PublishRule) error {
 	if rule.Name == "" {
@@ -222,6 +259,9 @@ func ValidateRule(rule proto.PublishRule) error {
 	}
 	if _, _, err := net.SplitHostPort(rule.Target); err != nil {
 		return fmt.Errorf("内网目标需为 host:port：%w", err)
+	}
+	if _, _, err := NormalizeVisibility(rule.Visibility, rule.VisibleTo); err != nil {
+		return err
 	}
 	return nil
 }

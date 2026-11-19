@@ -1,6 +1,7 @@
 package state
 
 import (
+	"fmt"
 	"net/netip"
 	"sort"
 	"sync"
@@ -118,6 +119,7 @@ func (r *Registry) MarkOffline(id string) {
 	}
 }
 
+// List 返回全部节点（含离线），供服务端面板使用。
 func (r *Registry) List() []Node {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
@@ -127,6 +129,66 @@ func (r *Registry) List() []Node {
 		out = append(out, r.copyLocked(n))
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].ID < out[j].ID })
+	return out
+}
+
+// SetRuleVisibility 更新某节点某条规则的可见范围（服务端管理员操作）。
+func (r *Registry) SetRuleVisibility(id, name, visibility string, visibleTo []string) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	n, ok := r.nodes[id]
+	if !ok {
+		return fmt.Errorf("节点 %s 不存在", id)
+	}
+	for i := range n.Publish {
+		if n.Publish[i].Name == name {
+			n.Publish[i].Visibility = visibility
+			n.Publish[i].VisibleTo = append([]string(nil), visibleTo...)
+			return nil
+		}
+	}
+	return fmt.Errorf("节点 %s 没有规则 %q", id, name)
+}
+
+// PeersFor 返回请求者可见的其他节点及其共享规则。
+// 规则按各自的可见范围过滤；所有节点本身始终可见，便于互相发现。
+func (r *Registry) PeersFor(nodeID string) []proto.PeerNode {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+
+	now := time.Now()
+	out := make([]proto.PeerNode, 0, len(r.nodes))
+	for id, n := range r.nodes {
+		if id == nodeID {
+			continue
+		}
+		online := now.Sub(n.LastSeen) <= onlineWindow
+		pn := proto.PeerNode{
+			NodeID:    n.ID,
+			OverlayIP: n.OverlayIP,
+			Path:      n.Path,
+			Online:    online,
+			Rules:     make([]proto.PeerRule, 0, len(n.Publish)),
+		}
+		for _, rule := range n.Publish {
+			if !rule.VisibleToNode(nodeID, false) {
+				continue
+			}
+			st := proto.RuleActive
+			if !online {
+				st = "offline"
+			}
+			pn.Rules = append(pn.Rules, proto.PeerRule{
+				Name:   rule.Name,
+				Proto:  rule.Proto,
+				Listen: rule.Listen,
+				State:  st,
+			})
+		}
+		out = append(out, pn)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].NodeID < out[j].NodeID })
 	return out
 }
 

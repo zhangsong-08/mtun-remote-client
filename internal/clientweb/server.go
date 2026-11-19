@@ -77,6 +77,7 @@ func (s *Server) handler() http.Handler {
 	mux.HandleFunc("/api/server", s.handleServer)
 	mux.HandleFunc("/api/rules", s.handleRule)
 	mux.HandleFunc("/api/rules/delete", s.handleDeleteRule)
+	mux.HandleFunc("/api/rules/visibility", s.handleRuleVisibility)
 	mux.HandleFunc("/api/update", s.handleUpdate)
 	mux.HandleFunc("/", s.handleIndex)
 
@@ -183,10 +184,12 @@ func (s *Server) handleServer(w http.ResponseWriter, r *http.Request) {
 }
 
 type ruleReq struct {
-	Name   string `json:"name"`
-	Proto  string `json:"proto"`
-	Listen int    `json:"listen"`
-	Target string `json:"target"`
+	Name       string   `json:"name"`
+	Proto      string   `json:"proto"`
+	Listen     int      `json:"listen"`
+	Target     string   `json:"target"`
+	Visibility string   `json:"visibility"`
+	VisibleTo  []string `json:"visible_to"`
 }
 
 func (s *Server) handleRule(w http.ResponseWriter, r *http.Request) {
@@ -198,8 +201,37 @@ func (s *Server) handleRule(w http.ResponseWriter, r *http.Request) {
 	if !decodeJSON(w, r, &req) {
 		return
 	}
-	rule := proto.PublishRule{Name: req.Name, Proto: req.Proto, Listen: req.Listen, Target: req.Target}
+	rule := proto.PublishRule{
+		Name:       req.Name,
+		Proto:      req.Proto,
+		Listen:     req.Listen,
+		Target:     req.Target,
+		Visibility: req.Visibility,
+		VisibleTo:  req.VisibleTo,
+	}
 	if err := s.ag.AddRule(rule); err != nil {
+		webx.WriteError(w, http.StatusBadRequest, err)
+		return
+	}
+	webx.WriteJSON(w, map[string]bool{"ok": true})
+}
+
+type visibilityReq struct {
+	Name       string   `json:"name"`
+	Visibility string   `json:"visibility"`
+	VisibleTo  []string `json:"visible_to"`
+}
+
+func (s *Server) handleRuleVisibility(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		return
+	}
+	var req visibilityReq
+	if !decodeJSON(w, r, &req) {
+		return
+	}
+	if err := s.ag.SetRuleVisibility(req.Name, req.Visibility, req.VisibleTo); err != nil {
 		webx.WriteError(w, http.StatusBadRequest, err)
 		return
 	}

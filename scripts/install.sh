@@ -8,7 +8,7 @@
 #   sudo bash install.sh -u                       # 卸载
 set -euo pipefail
 
-REPO="zhangsong-08/mtun"
+REPO="zhangsong-08/mtun-remote-server"
 VERSION=""          # 留空自动取 latest
 INSTALL_DIR="/opt/mtun"
 MIRROR="${MTUN_MIRROR:-}"

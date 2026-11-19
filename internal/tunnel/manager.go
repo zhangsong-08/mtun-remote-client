@@ -170,6 +170,31 @@ func (m *Manager) Statuses(id string) []proto.RuleStatus {
 	return n.statuses()
 }
 
+// SetVisibility 更新在线节点某条规则的可见范围（服务端管理员操作）。
+// 只影响对其他客户端的展示，不会重启公网端口监听。
+func (m *Manager) SetVisibility(id, name, visibility string, visibleTo []string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	n, ok := m.nodes[id]
+	if !ok {
+		return fmt.Errorf("节点 %s 不在线", id)
+	}
+	for i := range n.specs {
+		if n.specs[i].Name != name {
+			continue
+		}
+		n.specs[i].Visibility = visibility
+		n.specs[i].VisibleTo = append([]string(nil), visibleTo...)
+		if r, ok := n.rules[name]; ok {
+			r.spec.Visibility = visibility
+			r.spec.VisibleTo = append([]string(nil), visibleTo...)
+		}
+		return nil
+	}
+	return fmt.Errorf("节点 %s 没有规则 %q", id, name)
+}
+
 // Remove 只在会话仍是当前会话时清理，避免旧连接误删新连接。
 func (m *Manager) Remove(id string, sess *yamux.Session) {
 	m.mu.Lock()
@@ -196,7 +221,10 @@ func (n *node) reconcile() {
 	keep := make(map[string]bool, len(n.specs))
 	for _, spec := range n.specs {
 		keep[spec.Name] = true
-		if r, ok := n.rules[spec.Name]; ok && r.spec == spec {
+		if r, ok := n.rules[spec.Name]; ok && sameEndpoint(r.spec, spec) {
+			// 可见范围变化不影响监听，只同步给状态展示。
+			r.spec.Visibility = spec.Visibility
+			r.spec.VisibleTo = append([]string(nil), spec.VisibleTo...)
 			continue
 		}
 		if r, ok := n.rules[spec.Name]; ok {
@@ -211,6 +239,11 @@ func (n *node) reconcile() {
 			delete(n.rules, name)
 		}
 	}
+}
+
+// sameEndpoint 判断两条规则是否需要重建监听（可见范围不属于监听参数）。
+func sameEndpoint(a, b proto.PublishRule) bool {
+	return a.Name == b.Name && a.Proto == b.Proto && a.Listen == b.Listen && a.Target == b.Target
 }
 
 func (n *node) start(spec proto.PublishRule) *rule {
@@ -256,11 +289,13 @@ func (n *node) statuses() []proto.RuleStatus {
 	out := make([]proto.RuleStatus, 0, len(n.specs))
 	for _, spec := range n.specs {
 		st := proto.RuleStatus{
-			Name:   spec.Name,
-			Proto:  spec.Proto,
-			Listen: spec.Listen,
-			Target: spec.Target,
-			State:  proto.RuleError,
+			Name:       spec.Name,
+			Proto:      spec.Proto,
+			Listen:     spec.Listen,
+			Target:     spec.Target,
+			State:      proto.RuleError,
+			Visibility: spec.VisibilityMode(),
+			VisibleTo:  append([]string(nil), spec.VisibleTo...),
 		}
 		if r, ok := n.rules[spec.Name]; ok {
 			st.State = r.state

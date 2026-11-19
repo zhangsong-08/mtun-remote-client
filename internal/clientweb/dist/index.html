@@ -14,6 +14,7 @@
         <a href="#/overview" data-page="overview">概览</a>
         <a href="#/server" data-page="server">服务端</a>
         <a href="#/rules" data-page="rules">端口转发</a>
+        <a href="#/peers" data-page="peers">网络</a>
         <a href="#/update" data-page="update">版本更新</a>
       </nav>
       <div class="sidebar-foot">
@@ -98,6 +99,16 @@
             <label>内网目标
               <input id="r-target" placeholder="127.0.0.1:5000" autocomplete="off" required>
             </label>
+            <label>可见范围
+              <select id="r-visibility">
+                <option value="all">所有人</option>
+                <option value="self">仅自己</option>
+                <option value="nodes">指定节点</option>
+              </select>
+            </label>
+            <label id="r-visible-wrap" style="display:none">可见节点 ID
+              <input id="r-visible-to" placeholder="node-a,node-b" autocomplete="off">
+            </label>
             <button type="submit">添加规则</button>
           </form>
           <div class="form-msg" id="rule-msg"></div>
@@ -116,11 +127,40 @@
                   <th>协议</th>
                   <th>公网端口</th>
                   <th>内网目标</th>
+                  <th>可见范围</th>
                   <th>状态</th>
                   <th>操作</th>
                 </tr>
               </thead>
               <tbody id="rows"></tbody>
+            </table>
+          </div>
+        </div>
+      </section>
+
+      <section class="page" id="page-peers" hidden>
+        <div class="page-head">
+          <h1>网络</h1>
+          <span class="muted">经服务端中继可见的其他客户端，以及它们对你共享的规则</span>
+        </div>
+        <div class="panel">
+          <div class="toolbar">
+            <input id="peer-search" class="search" placeholder="搜索节点、覆盖 IP、规则名或端口">
+            <span class="spacer"></span>
+            <span class="muted" id="peer-count"></span>
+          </div>
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>节点</th>
+                  <th>覆盖 IP</th>
+                  <th>路径</th>
+                  <th>共享规则</th>
+                  <th>访问地址</th>
+                </tr>
+              </thead>
+              <tbody id="peer-rows"></tbody>
             </table>
           </div>
         </div>

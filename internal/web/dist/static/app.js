@@ -101,6 +101,55 @@ function ruleBadge(st, message) {
   return span;
 }
 
+function visibilityText(rule) {
+  const mode = rule.visibility || "all";
+  if (mode === "self") return "仅自己";
+  if (mode === "nodes") {
+    const ids = rule.visible_to || [];
+    return ids.length ? `指定节点（${ids.join("、")}）` : "指定节点（无）";
+  }
+  return "所有人";
+}
+
+// changeVisibility 让管理员修改任意节点规则的可见范围，服务端随后下发到该客户端落盘。
+async function changeVisibility(nodeID, rule) {
+  const mode = rule.visibility || "all";
+  const preset = mode === "nodes" ? `nodes:${(rule.visible_to || []).join(",")}` : mode;
+  const input = prompt(
+    `设置规则「${rule.name}」的可见范围：\n` +
+      "all = 所有客户端可见\n" +
+      "self = 仅规则所属客户端可见\n" +
+      "nodes:节点1,节点2 = 仅指定节点可见",
+    preset
+  );
+  if (input === null) return;
+  let visibility = input.trim().toLowerCase();
+  let visibleTo = [];
+  if (visibility.startsWith("nodes:")) {
+    visibility = "nodes";
+    visibleTo = input.split(":").slice(1).join(":").split(",").map((s) => s.trim()).filter(Boolean);
+  }
+  if (!["all", "self", "nodes"].includes(visibility)) {
+    alert("可见范围只能是 all / self / nodes");
+    return;
+  }
+  if (visibility === "nodes" && !visibleTo.length) {
+    alert("nodes 模式需要至少一个节点 ID");
+    return;
+  }
+  try {
+    await postJSON("/api/rules/visibility", {
+      node: nodeID,
+      name: rule.name,
+      visibility,
+      visible_to: visibleTo,
+    });
+    await refresh();
+  } catch (err) {
+    alert("修改可见范围失败：" + err.message);
+  }
+}
+
 function emptyRow(tbody, cols, text) {
   const tr = document.createElement("tr");
   const td = document.createElement("td");
@@ -200,7 +249,7 @@ function nodeDetail(node) {
   const table = document.createElement("table");
   const thead = document.createElement("thead");
   const headRow = document.createElement("tr");
-  for (const title of ["规则", "协议", "公网端口", "内网目标", "状态"]) {
+  for (const title of ["规则", "协议", "公网端口", "内网目标", "可见范围", "状态"]) {
     const th = document.createElement("th");
     th.textContent = title;
     headRow.appendChild(th);
@@ -215,6 +264,7 @@ function nodeDetail(node) {
     tr.appendChild(cell(rule.proto || "tcp"));
     tr.appendChild(cell(String(rule.listen || 0), true));
     tr.appendChild(cell(rule.target || "-", true));
+    tr.appendChild(cell(visibilityText(rule)));
     const statusTd = document.createElement("td");
     statusTd.appendChild(ruleBadge(rule.state, rule.message));
     if (rule.message) {
@@ -295,7 +345,9 @@ function renderRules() {
   const rows = [];
   for (const node of state.nodes) {
     for (const rule of node.rules || []) {
-      const hay = [node.id, rule.name, rule.proto, rule.listen, rule.target].join(" ").toLowerCase();
+      const hay = [node.id, rule.name, rule.proto, rule.listen, rule.target, visibilityText(rule)]
+        .join(" ")
+        .toLowerCase();
       if (!q || hay.includes(q)) rows.push({ node, rule });
     }
   }
@@ -313,7 +365,7 @@ function renderRules() {
   $("rule-next").disabled = state.rulePage >= pages;
 
   if (!pageRows.length) {
-    emptyRow(tbody, 6, "暂无匹配的转发规则");
+    emptyRow(tbody, 8, "暂无匹配的转发规则");
     return;
   }
 
@@ -324,6 +376,7 @@ function renderRules() {
     tr.appendChild(cell(rule.proto || "tcp"));
     tr.appendChild(cell(String(rule.listen || 0), true));
     tr.appendChild(cell(rule.target || "-", true));
+    tr.appendChild(cell(visibilityText(rule)));
     const statusTd = document.createElement("td");
     statusTd.appendChild(ruleBadge(rule.state, rule.message));
     if (rule.message) {
@@ -333,6 +386,15 @@ function renderRules() {
       statusTd.appendChild(msg);
     }
     tr.appendChild(statusTd);
+
+    const opTd = document.createElement("td");
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "btn-link";
+    btn.textContent = "修改可见";
+    btn.addEventListener("click", () => changeVisibility(node.id, rule));
+    opTd.appendChild(btn);
+    tr.appendChild(opTd);
     tbody.appendChild(tr);
   }
 }

@@ -14,29 +14,33 @@ import (
 	"mtun/pkg/proto"
 )
 
-// Status 是客户端控制台展示的全部状态，只包含本客户端的规则。
+// Status 是客户端控制台展示的全部状态，只包含本客户端的规则，
+// 以及与「网络」页相关的、按可见性过滤后的其他节点。
 type Status struct {
-	Version          string       `json:"version"`
-	Node             string       `json:"node"`
-	Server           string       `json:"server"`
-	Dashboard        string       `json:"dashboard"`
-	HasAccess        bool         `json:"has_access"`
-	Connected        bool         `json:"connected"`
-	Error            string       `json:"error,omitempty"`
-	NodeID           string       `json:"node_id,omitempty"`
-	OverlayIP        string       `json:"overlay_ip,omitempty"`
-	Path             string       `json:"path,omitempty"`
-	ConnectedSeconds int64        `json:"connected_seconds"`
-	Rules            []RuleStatus `json:"rules"`
+	Version          string           `json:"version"`
+	Node             string           `json:"node"`
+	Server           string           `json:"server"`
+	Dashboard        string           `json:"dashboard"`
+	HasAccess        bool             `json:"has_access"`
+	Connected        bool             `json:"connected"`
+	Error            string           `json:"error,omitempty"`
+	NodeID           string           `json:"node_id,omitempty"`
+	OverlayIP        string           `json:"overlay_ip,omitempty"`
+	Path             string           `json:"path,omitempty"`
+	ConnectedSeconds int64            `json:"connected_seconds"`
+	Rules            []RuleStatus     `json:"rules"`
+	Peers            []proto.PeerNode `json:"peers"`
 }
 
 type RuleStatus struct {
-	Name    string `json:"name"`
-	Proto   string `json:"proto"`
-	Listen  int    `json:"listen"`
-	Target  string `json:"target"`
-	State   string `json:"state"`
-	Message string `json:"message,omitempty"`
+	Name       string   `json:"name"`
+	Proto      string   `json:"proto"`
+	Listen     int      `json:"listen"`
+	Target     string   `json:"target"`
+	State      string   `json:"state"`
+	Message    string   `json:"message,omitempty"`
+	Visibility string   `json:"visibility"`
+	VisibleTo  []string `json:"visible_to,omitempty"`
 }
 
 // Agent 监管客户端与服务端的连接：配置变化后持久化并重连。
@@ -52,6 +56,7 @@ type Agent struct {
 	lastErr  string
 	self     proto.SelfInfo
 	statuses []proto.RuleStatus
+	peers    []proto.PeerNode
 	since    time.Time
 }
 
@@ -97,7 +102,8 @@ func (a *Agent) Run(ctx context.Context) error {
 		}
 
 		runCtx, cancel := context.WithCancel(ctx)
-		client := control.NewClient(server, token, a.cfg.Node, a.version, rules, a.applyStatus, a.log)
+		client := control.NewClient(server, token, a.cfg.Node, a.version, rules,
+			a.applyStatus, a.applyPeers, a.applyAcl, a.log)
 		done := make(chan error, 1)
 		go func() { done <- client.Run(runCtx) }()
 
@@ -165,6 +171,43 @@ func (a *Agent) applyStatus(st proto.Status) {
 	a.statuses = st.Rules
 }
 
+// applyPeers 保存服务端推送的可见节点与共享规则，供「网络」页展示。
+func (a *Agent) applyPeers(p proto.Peers) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.peers = append([]proto.PeerNode(nil), p.Nodes...)
+}
+
+// applyAcl 接收服务端下发的可见范围修改并落盘，避免重连后回退。
+func (a *Agent) applyAcl(u proto.AclUpdate) {
+	visibility, visibleTo, err := config.NormalizeVisibility(u.Visibility, u.VisibleTo)
+	if err != nil {
+		a.log.Warn("忽略非法的可见范围下发", "rule", u.Name, "err", err)
+		return
+	}
+
+	a.mu.Lock()
+	defer a.mu.Unlock()
+
+	for i := range a.cfg.Publish.Rules {
+		if a.cfg.Publish.Rules[i].Name != u.Name {
+			continue
+		}
+		prevVis := a.cfg.Publish.Rules[i].Visibility
+		prevTo := a.cfg.Publish.Rules[i].VisibleTo
+		a.cfg.Publish.Rules[i].Visibility = visibility
+		a.cfg.Publish.Rules[i].VisibleTo = visibleTo
+		if err := config.Save(a.cfgPath, a.cfg); err != nil {
+			a.cfg.Publish.Rules[i].Visibility = prevVis
+			a.cfg.Publish.Rules[i].VisibleTo = prevTo
+			a.log.Warn("保存服务端下发的可见范围失败", "rule", u.Name, "err", err)
+			return
+		}
+		a.log.Info("服务端已修改规则可见范围", "rule", u.Name, "visibility", visibility)
+		return
+	}
+}
+
 func (a *Agent) setDown(msg string) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
@@ -172,6 +215,7 @@ func (a *Agent) setDown(msg string) {
 	a.lastErr = msg
 	a.self = proto.SelfInfo{}
 	a.statuses = nil
+	a.peers = nil
 }
 
 func (a *Agent) waitRestart(ctx context.Context) bool {
@@ -237,6 +281,12 @@ func (a *Agent) AddRule(rule proto.PublishRule) error {
 	if rule.Proto == "" {
 		rule.Proto = "tcp"
 	}
+	visibility, visibleTo, err := config.NormalizeVisibility(rule.Visibility, rule.VisibleTo)
+	if err != nil {
+		return err
+	}
+	rule.Visibility = visibility
+	rule.VisibleTo = visibleTo
 	if err := config.ValidateRule(rule); err != nil {
 		return err
 	}
@@ -295,6 +345,40 @@ func (a *Agent) DeleteRule(name string) error {
 	return nil
 }
 
+// SetRuleVisibility 修改本机规则的可见范围并落盘，随后重连让服务端刷新 peers。
+func (a *Agent) SetRuleVisibility(name, visibility string, visibleTo []string) error {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return fmt.Errorf("规则名称不能为空")
+	}
+	visibility, visibleTo, err := config.NormalizeVisibility(visibility, visibleTo)
+	if err != nil {
+		return err
+	}
+
+	a.mu.Lock()
+	defer a.mu.Unlock()
+
+	for i := range a.cfg.Publish.Rules {
+		if a.cfg.Publish.Rules[i].Name != name {
+			continue
+		}
+		prevVis := a.cfg.Publish.Rules[i].Visibility
+		prevTo := a.cfg.Publish.Rules[i].VisibleTo
+		a.cfg.Publish.Rules[i].Visibility = visibility
+		a.cfg.Publish.Rules[i].VisibleTo = visibleTo
+		if err := config.Save(a.cfgPath, a.cfg); err != nil {
+			a.cfg.Publish.Rules[i].Visibility = prevVis
+			a.cfg.Publish.Rules[i].VisibleTo = prevTo
+			return err
+		}
+		a.log.Info("规则可见范围已更新", "rule", name, "visibility", visibility)
+		a.trigger()
+		return nil
+	}
+	return fmt.Errorf("规则 %q 不存在", name)
+}
+
 // Snapshot 汇总连接状态与规则状态，供客户端控制台轮询。
 func (a *Agent) Snapshot() Status {
 	a.mu.Lock()
@@ -312,6 +396,10 @@ func (a *Agent) Snapshot() Status {
 		OverlayIP: a.self.OverlayIP,
 		Path:      a.self.Path,
 		Rules:     make([]RuleStatus, 0, len(a.cfg.Publish.Rules)),
+		Peers:     append([]proto.PeerNode(nil), a.peers...),
+	}
+	if st.Peers == nil {
+		st.Peers = []proto.PeerNode{}
 	}
 	if a.up {
 		st.ConnectedSeconds = int64(time.Since(a.since).Seconds())
@@ -319,12 +407,14 @@ func (a *Agent) Snapshot() Status {
 
 	for _, spec := range a.cfg.Publish.Rules {
 		view := RuleStatus{
-			Name:    spec.Name,
-			Proto:   spec.Proto,
-			Listen:  spec.Listen,
-			Target:  spec.Target,
-			State:   proto.RulePending,
-			Message: "未连接服务端",
+			Name:       spec.Name,
+			Proto:      spec.Proto,
+			Listen:     spec.Listen,
+			Target:     spec.Target,
+			State:      proto.RulePending,
+			Message:    "未连接服务端",
+			Visibility: spec.VisibilityMode(),
+			VisibleTo:  append([]string(nil), spec.VisibleTo...),
 		}
 		if a.up {
 			view.Message = "等待服务端确认"

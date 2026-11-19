@@ -12,6 +12,17 @@ const (
 	TypeHeartbeat = "heartbeat"
 	TypeStatus    = "status"
 	TypeError     = "error"
+	// TypePeers 由服务端推送给客户端：其他节点及其对本节点可见的规则。
+	TypePeers = "peers"
+	// TypeAclUpdate 由服务端下发给规则所属客户端：修改某条规则的可见范围。
+	TypeAclUpdate = "acl_update"
+)
+
+// 规则可见范围。空值与 VisibleAll 等价，兼容旧配置。
+const (
+	VisibleAll   = "all"   // 所有客户端可见
+	VisibleSelf  = "self"  // 仅规则所属客户端可见
+	VisibleNodes = "nodes" // 仅 VisibleTo 中列出的节点可见
 )
 
 // Error 表示服务端拒绝或错误提示（如节点被临时封禁）。
@@ -49,15 +60,52 @@ type PublishRule struct {
 	Proto  string `json:"proto" yaml:"proto"`
 	Listen int    `json:"listen" yaml:"listen"`
 	Target string `json:"target" yaml:"target"`
+	// Visibility 控制哪些其他客户端可以在“网络”中看到这条规则：
+	// all（默认）、self（仅自己）、nodes（仅 VisibleTo 中的节点）。
+	Visibility string `json:"visibility,omitempty" yaml:"visibility,omitempty"`
+	// VisibleTo 仅在 Visibility=nodes 时生效，保存可见该规则的节点 ID。
+	VisibleTo []string `json:"visible_to,omitempty" yaml:"visible_to,omitempty"`
+}
+
+// VisibilityMode 把空值归一为 all，避免旧配置出现未知模式。
+func (r PublishRule) VisibilityMode() string {
+	switch r.Visibility {
+	case VisibleSelf, VisibleNodes:
+		return r.Visibility
+	default:
+		return VisibleAll
+	}
+}
+
+// VisibleToNode 判断某节点能否看到这条规则；规则所有节点自己始终可见。
+func (r PublishRule) VisibleToNode(nodeID string, isOwner bool) bool {
+	if isOwner {
+		return true
+	}
+	switch r.VisibilityMode() {
+	case VisibleSelf:
+		return false
+	case VisibleNodes:
+		for _, id := range r.VisibleTo {
+			if id == nodeID {
+				return true
+			}
+		}
+		return false
+	default:
+		return true
+	}
 }
 
 type RuleStatus struct {
-	Name    string `json:"name"`
-	Proto   string `json:"proto"`
-	Listen  int    `json:"listen"`
-	Target  string `json:"target"`
-	State   string `json:"state"`
-	Message string `json:"message,omitempty"`
+	Name       string   `json:"name"`
+	Proto      string   `json:"proto"`
+	Listen     int      `json:"listen"`
+	Target     string   `json:"target"`
+	State      string   `json:"state"`
+	Message    string   `json:"message,omitempty"`
+	Visibility string   `json:"visibility"`
+	VisibleTo  []string `json:"visible_to,omitempty"`
 }
 
 type SelfInfo struct {
@@ -70,6 +118,36 @@ type SelfInfo struct {
 type Status struct {
 	Self  SelfInfo     `json:"self"`
 	Rules []RuleStatus `json:"rules"`
+}
+
+// PeerRule 是共享给其他客户端的规则视图，不包含内网目标。
+type PeerRule struct {
+	Name   string `json:"name"`
+	Proto  string `json:"proto"`
+	Listen int    `json:"listen"`
+	State  string `json:"state,omitempty"`
+}
+
+// PeerNode 是其他客户端在“网络”页看到的节点信息。
+type PeerNode struct {
+	NodeID    string     `json:"node_id"`
+	Version   string     `json:"version,omitempty"`
+	OverlayIP string     `json:"overlay_ip"`
+	Path      string     `json:"path"`
+	Online    bool       `json:"online"`
+	Rules     []PeerRule `json:"rules"`
+}
+
+// Peers 是服务端按请求者过滤后推送的节点与共享规则。
+type Peers struct {
+	Nodes []PeerNode `json:"nodes"`
+}
+
+// AclUpdate 是服务端要求客户端修改某条规则的可见范围并落盘。
+type AclUpdate struct {
+	Name       string   `json:"name"`
+	Visibility string   `json:"visibility"`
+	VisibleTo  []string `json:"visible_to,omitempty"`
 }
 
 // StreamHeader 是数据流的前置头，用来告诉客户端该连接命中的规则。
