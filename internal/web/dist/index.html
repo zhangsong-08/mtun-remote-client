@@ -201,7 +201,7 @@
           <h1>面板管理</h1>
           <span class="muted">修改后需重启面板生效</span>
         </div>
-        <div class="note">面板出于安全考虑只允许监听回环地址（127.0.0.1 / localhost / ::1）。修改监听地址或会话时长后，请点击“重启面板”。</div>
+        <div class="note">默认只监听回环地址（127.0.0.1），仅本机可访问。如需远程访问，填写 <code>0.0.0.0:10004</code> 或服务器网卡 IP，并务必使用强密码、通过防火墙限制来源 IP。修改后请点击“重启面板”。</div>
         <div class="panel">
           <div class="panel-head">
             <h2>常规设置</h2>
@@ -226,7 +226,7 @@
           <div class="panel-head"><h2>安全信息</h2></div>
           <div class="info-list">
             <div><span>管理密码</span><b>已设置（终端 mtun passwd 修改）</b></div>
-            <div><span>访问范围</span><b>仅回环地址</b></div>
+            <div><span>访问范围</span><b id="panel-scope">按监听地址决定</b></div>
             <div><span>会话策略</span><b>绝对有效期 + 空闲 30 分钟自动失效</b></div>
             <div><span>配置文件</span><b class="mono" id="panel-config">-</b></div>
           </div>

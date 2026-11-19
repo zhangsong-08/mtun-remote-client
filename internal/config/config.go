@@ -6,6 +6,7 @@ import (
 	"net"
 	"net/netip"
 	"os"
+	"strconv"
 	"strings"
 
 	"gopkg.in/yaml.v3"
@@ -289,7 +290,7 @@ func (c *Config) validate(want Role) error {
 		}
 	}
 	if c.Dashboard != "" {
-		if err := validateLoopback(c.Dashboard); err != nil {
+		if err := ValidateDashboard(c.Dashboard); err != nil {
 			return err
 		}
 	}
@@ -301,23 +302,24 @@ func (c *Config) validate(want Role) error {
 	return nil
 }
 
-// ValidateDashboard 校验管理面板地址：只允许回环地址。
+// ValidateDashboard 校验管理面板地址。
+// 默认监听回环；允许显式配置为 0.0.0.0:10004 或服务器 IP，
+// 此时面板可从远程访问，请务必配合强密码与防火墙来源限制。
 func ValidateDashboard(addr string) error {
-	return validateLoopback(addr)
-}
-
-// validateLoopback 强制管理面只能绑定回环地址。
-func validateLoopback(addr string) error {
-	host, port, err := net.SplitHostPort(addr)
+	addr = strings.TrimSpace(addr)
+	if addr == "" {
+		return nil
+	}
+	_, port, err := net.SplitHostPort(addr)
 	if err != nil {
 		return fmt.Errorf("dashboard %q: %w", addr, err)
 	}
 	if port == "" {
-		return fmt.Errorf("dashboard %q: missing port", addr)
+		return fmt.Errorf("dashboard %q: 缺少端口", addr)
 	}
-	switch host {
-	case "127.0.0.1", "localhost", "::1":
-		return nil
+	n, err := strconv.Atoi(port)
+	if err != nil || n <= 0 || n > 65535 {
+		return fmt.Errorf("dashboard %q: 端口非法", addr)
 	}
-	return fmt.Errorf("dashboard must bind loopback (127.0.0.1), got %q", host)
+	return nil
 }

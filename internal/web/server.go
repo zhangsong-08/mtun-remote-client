@@ -28,7 +28,7 @@ import (
 //go:embed dist
 var distFS embed.FS
 
-// Server 是只监听回环地址的服务端管理控制台。
+// Server 是服务端管理控制台，默认监听回环，也可配置为公网地址供远程访问。
 type Server struct {
 	cfg     *config.Config
 	cfgPath string

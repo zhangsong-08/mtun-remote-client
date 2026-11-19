@@ -223,8 +223,9 @@ func TestAllowedHost(t *testing.T) {
 		"127.0.0.1:10004":    true,
 		"localhost:10005":    true,
 		"[::1]:10004":        true,
-		"evil.example.com:1": false,
-		"192.168.1.10:10005": false,
+		"192.168.1.10:10005": true,  // 面板可绑定内网/公网地址
+		"panel.example.com":  true,  // 远程访问时 Host 为域名
+		"":                   false, // 缺少 Host 一律拒绝
 	}
 	for host, want := range cases {
 		if got := allowedHost(host); got != want {

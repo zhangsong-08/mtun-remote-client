@@ -13,7 +13,6 @@ import (
 	"fmt"
 	"html/template"
 	"log/slog"
-	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -603,13 +602,11 @@ func WriteError(w http.ResponseWriter, code int, err error) {
 	_ = json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
 }
 
-// allowedHost 防止 DNS rebinding 绕过回环限制。
+// allowedHost 校验请求 Host。
+// 面板允许绑定公网地址后，这里不再限制回环地址；
+// 写操作仍由 allowedOrigin 做同源校验，且访问需要密码登录。
 func allowedHost(hostport string) bool {
-	host := hostport
-	if h, _, err := net.SplitHostPort(hostport); err == nil {
-		host = h
-	}
-	return isLoopbackHost(strings.Trim(host, "[]"))
+	return strings.TrimSpace(hostport) != ""
 }
 
 // allowedOrigin 拒绝跨站发起的写操作；同源与命令行请求（无 Origin）放行。

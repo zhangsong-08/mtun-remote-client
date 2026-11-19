@@ -14,6 +14,7 @@ INSTALL_DIR="/opt/mtun"
 MIRROR="${MTUN_MIRROR:-}"
 LOCAL_FILE=""
 ADMIN_PASSWORD="${MTUN_ADMIN_PASSWORD:-}"
+PANEL_ADDR="${MTUN_PANEL:-127.0.0.1:10004}"
 UNINSTALL=false
 SYSTEMD_SERVICE="mtun-server"
 
@@ -28,6 +29,7 @@ while [[ $# -gt 0 ]]; do
         -m|--mirror)   MIRROR="$2"; shift 2 ;;
         -f|--file)     LOCAL_FILE="$2"; shift 2 ;;
         -p|--password) ADMIN_PASSWORD="$2"; shift 2 ;;
+        --panel)       PANEL_ADDR="$2"; shift 2 ;;
         -u|--uninstall) UNINSTALL=true; shift ;;
         -h|--help)
             cat <<EOF
@@ -43,6 +45,9 @@ mtun 服务端一键安装脚本（Linux / systemd）
   -f, --file PATH      离线安装：使用本地已有的 linux 二进制，不联网下载
   -p, --password PW    直接设置 Web 控制台管理密码（至少 8 位），不交互
                        也可用环境变量 MTUN_ADMIN_PASSWORD
+  --panel ADDR         面板监听地址，默认 127.0.0.1:10004
+                       需要远程访问面板时用 0.0.0.0:10004
+                       也可用环境变量 MTUN_PANEL
   -u, --uninstall      卸载（停服务、删 systemd unit、删目录）
   -h, --help           本帮助
 
@@ -231,6 +236,21 @@ EOF
     echo "已生成 $CFG"
 fi
 
+# 应用面板监听地址（默认回环，可传 --panel 0.0.0.0:10004 开放远程访问）
+if [ "$PANEL_ADDR" != "127.0.0.1:10004" ]; then
+    if grep -qE '^dashboard:' "$CFG"; then
+        $SUDO sed -i "s|^dashboard:.*|dashboard: \"$PANEL_ADDR\"|" "$CFG"
+    else
+        printf 'dashboard: "%s"\n' "$PANEL_ADDR" | $SUDO tee -a "$CFG" >/dev/null
+    fi
+    if ! $BIN check -c "$CFG" -role server >/dev/null 2>&1; then
+        echo "面板地址 $PANEL_ADDR 无效：" >&2
+        $BIN check -c "$CFG" -role server >&2 || true
+        exit 1
+    fi
+    echo "面板监听地址已设为 $PANEL_ADDR"
+fi
+
 # ---------- 接入密码 ----------
 JOIN="$CFG.join"
 if [ ! -f "$JOIN" ] || [ ! -s "$JOIN" ]; then
@@ -307,7 +327,7 @@ if systemctl is-active --quiet "$SYSTEMD_SERVICE"; then
     echo ""
     echo "  安装目录:       $INSTALL_DIR"
     echo "  配置文件:       $CFG"
-    echo "  控制台:         http://127.0.0.1:10004（仅本机，远程请用 SSH 隧道）"
+    echo "  控制台:         http://${PANEL_ADDR}（默认仅本机；改为 0.0.0.0 后可从外部访问）"
     echo "  控制面端口:     :10000 (TLS 1.3)"
     echo "  转发端口范围:   10100-10999"
     echo "  客户端接入密码: $JOIN_PW"

@@ -158,11 +158,15 @@ function renderPanelInfo(p) {
   $("ov-panel-addr").textContent = p.dashboard || "-";
   $("ov-session").textContent = `${p.session_minutes} 分钟`;
   $("ov-pagesize").textContent = `${p.page_size} 条`;
+function renderPanelInfo(p) {
   $("p-dashboard").value = p.dashboard || "";
   $("p-session").value = p.session_minutes;
   $("p-pagesize").value = p.page_size;
   $("panel-path").textContent = p.config_path || "";
   $("panel-config").textContent = p.config_path || "-";
+  const addr = (p.dashboard || "").toLowerCase();
+  const local = !addr || addr.startsWith("127.") || addr.startsWith("localhost") || addr.startsWith("[::1]") || addr.startsWith("::1");
+  $("panel-scope").textContent = local ? "仅本机（回环地址）" : "可从外部网络访问";
 }
 
 async function loadPanel() {
