@@ -27,6 +27,13 @@ import (
 
 const maxDownload = 256 << 20 // 256MB
 
+// 下载重试：镜像或直连偶发中断（unexpected EOF）时重新请求，
+// 4xx 等确定性错误不重试。
+const (
+	maxFetchAttempts = 2
+	fetchRetryDelay  = 700 * time.Millisecond
+)
+
 type Asset struct {
 	Name string `json:"name"`
 	URL  string `json:"browser_download_url"`
@@ -193,6 +200,49 @@ func (u *Updater) download(ctx context.Context, url string) ([]byte, error) {
 }
 
 func (u *Updater) fetch(ctx context.Context, url string) ([]byte, error) {
+	var lastErr error
+	for attempt := 1; attempt <= maxFetchAttempts; attempt++ {
+		if attempt > 1 {
+			select {
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			case <-time.After(fetchRetryDelay):
+			}
+		}
+		data, err := u.fetchOnce(ctx, url)
+		if err == nil {
+			return data, nil
+		}
+		lastErr = err
+		if !retryableDownload(err) || ctx.Err() != nil {
+			break
+		}
+		u.Log.Warn("下载中断，准备重试", "url", url, "attempt", attempt, "err", err)
+	}
+	return nil, lastErr
+}
+
+// statusError 表示下载源返回非 200 响应。
+type statusError struct {
+	code   int
+	status string
+}
+
+func (e *statusError) Error() string { return "下载更新包返回 " + e.status }
+
+// retryableDownload 判断错误是否值得重试：网络中断、5xx、408/429 可重试，
+// 其余 4xx（如 404/403）直接放弃。
+func retryableDownload(err error) bool {
+	var se *statusError
+	if errors.As(err, &se) {
+		return se.code == http.StatusRequestTimeout ||
+			se.code == http.StatusTooManyRequests ||
+			se.code >= 500
+	}
+	return true
+}
+
+func (u *Updater) fetchOnce(ctx context.Context, url string) ([]byte, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
 		return nil, err
@@ -204,14 +254,18 @@ func (u *Updater) fetch(ctx context.Context, url string) ([]byte, error) {
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("下载更新包返回 %s", resp.Status)
+		return nil, &statusError{code: resp.StatusCode, status: resp.Status}
 	}
 	data, err := io.ReadAll(io.LimitReader(resp.Body, maxDownload+1))
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("读取更新包失败: %w", err)
 	}
 	if len(data) > maxDownload {
 		return nil, errors.New("更新包超过大小限制")
+	}
+	// 连接中途断开时 ReadAll 可能只返回部分数据；用 Content-Length 兜底校验。
+	if resp.ContentLength >= 0 && int64(len(data)) != resp.ContentLength {
+		return nil, fmt.Errorf("更新包不完整（期望 %d 字节，实际 %d）", resp.ContentLength, len(data))
 	}
 	return data, nil
 }
