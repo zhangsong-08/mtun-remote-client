@@ -13,6 +13,7 @@ VERSION=""          # 留空自动取 latest
 INSTALL_DIR="/opt/mtun"
 MIRROR="${MTUN_MIRROR:-}"
 LOCAL_FILE=""
+ADMIN_PASSWORD="${MTUN_ADMIN_PASSWORD:-}"
 UNINSTALL=false
 SYSTEMD_SERVICE="mtun-server"
 
@@ -26,6 +27,7 @@ while [[ $# -gt 0 ]]; do
         -d|--dir)      INSTALL_DIR="$2"; shift 2 ;;
         -m|--mirror)   MIRROR="$2"; shift 2 ;;
         -f|--file)     LOCAL_FILE="$2"; shift 2 ;;
+        -p|--password) ADMIN_PASSWORD="$2"; shift 2 ;;
         -u|--uninstall) UNINSTALL=true; shift ;;
         -h|--help)
             cat <<EOF
@@ -39,6 +41,8 @@ mtun 服务端一键安装脚本（Linux / systemd）
   -m, --mirror URL     GitHub 加速前缀，如 https://ghfast.top/
                        也可用环境变量 MTUN_MIRROR
   -f, --file PATH      离线安装：使用本地已有的 linux 二进制，不联网下载
+  -p, --password PW    直接设置 Web 控制台管理密码（至少 8 位），不交互
+                       也可用环境变量 MTUN_ADMIN_PASSWORD
   -u, --uninstall      卸载（停服务、删 systemd unit、删目录）
   -h, --help           本帮助
 
@@ -70,8 +74,11 @@ if [ "$UNINSTALL" = true ]; then
     $SUDO systemctl disable "$SYSTEMD_SERVICE" 2>/dev/null || true
     $SUDO rm -f "/etc/systemd/system/${SYSTEMD_SERVICE}.service"
     $SUDO systemctl daemon-reload
+    # 清理手动启动的残留进程（只匹配本安装目录下的 mtun）
+    $SUDO pkill -f "$INSTALL_DIR/bin/mtun" 2>/dev/null || true
+    sleep 1
     $SUDO rm -rf "$INSTALL_DIR"
-    echo "已卸载"
+    echo "已卸载：服务、unit、$INSTALL_DIR 均已删除"
     exit 0
 fi
 
@@ -239,8 +246,26 @@ fi
 # ---------- 管理密码 ----------
 if [ ! -f "$CFG.passwd" ]; then
     echo
-    echo "==> 设置服务端 Web 控制台登录密码（至少 8 位）"
-    $BIN passwd -c "$CFG"
+    if [ -n "$ADMIN_PASSWORD" ]; then
+        if [ "${#ADMIN_PASSWORD}" -lt 8 ]; then
+            echo "管理密码至少 8 位" >&2
+            exit 1
+        fi
+        echo "==> 设置管理密码（-p 指定）"
+        $BIN passwd -c "$CFG" -password "$ADMIN_PASSWORD"
+    elif [ -t 0 ]; then
+        echo "==> 设置服务端 Web 控制台登录密码（至少 8 位）"
+        $BIN passwd -c "$CFG"
+    else
+        # 非交互（如 curl | bash）时自动生成，避免卡住或失败
+        ADMIN_PASSWORD="$(head -c 16 /dev/urandom | od -An -tx1 | tr -d ' \n')"
+        $BIN passwd -c "$CFG" -password "$ADMIN_PASSWORD"
+        echo "==> 已自动生成管理密码（非交互模式）"
+        echo "    ─────────────────────────────────────────"
+        echo "    $ADMIN_PASSWORD"
+        echo "    ─────────────────────────────────────────"
+        echo "    可用 -p 指定自定义密码，或之后 mtun passwd -c $CFG 修改"
+    fi
 fi
 
 # ---------- systemd ----------
