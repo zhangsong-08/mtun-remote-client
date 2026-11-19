@@ -25,6 +25,7 @@ import (
 
 	"mtun/internal/adminapi"
 	"mtun/internal/app"
+	"mtun/internal/autostart"
 	"mtun/internal/config"
 	"mtun/internal/platform"
 	"mtun/internal/selfupdate"
@@ -125,6 +126,9 @@ func run(args []string, logger *slog.Logger) error {
 
 	case "__restart":
 		return selfupdate.RunRestartHelper(logger)
+
+	case "__autostart":
+		return runAutostart(args[1:])
 
 	case "version", "-v", "--version":
 		fmt.Println("mtun", version.Version)
@@ -508,6 +512,55 @@ func runConnect(args []string) error {
 	}
 	fmt.Printf("客户端未运行，配置已写入 %s\n启动后生效：mtun client -c %s\n", opts.cfg, opts.cfg)
 	return nil
+}
+
+func runAutostart(args []string) error {
+	if len(args) == 0 {
+		return errors.New("用法: mtun __autostart status|enable|disable|remove -role server|client -c 配置文件")
+	}
+	action := args[0]
+	fs := flag.NewFlagSet("__autostart", flag.ContinueOnError)
+	role := fs.String("role", "", "角色：server 或 client")
+	cfgPath := fs.String("c", "", "配置文件路径")
+	start := fs.Bool("start", false, "启用后立即启动")
+	if err := fs.Parse(args[1:]); err != nil {
+		return err
+	}
+	if fs.NArg() != 0 {
+		return fmt.Errorf("未知参数: %s", strings.Join(fs.Args(), " "))
+	}
+	if *start && action != "enable" {
+		return errors.New("-start 仅可用于 enable")
+	}
+	manager, err := autostart.New(*role, *cfgPath)
+	if err != nil {
+		return err
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	var status autostart.Status
+	switch action {
+	case "status":
+		status, err = manager.Status(ctx)
+	case "enable":
+		status, err = manager.Set(ctx, true)
+		if err == nil && *start {
+			err = manager.Start(ctx)
+		}
+	case "disable":
+		status, err = manager.Set(ctx, false)
+	case "remove":
+		if err = manager.Remove(ctx); err == nil {
+			return json.NewEncoder(os.Stdout).Encode(map[string]bool{"removed": true})
+		}
+	default:
+		return fmt.Errorf("未知的 __autostart 子命令 %q", action)
+	}
+	if err != nil {
+		return err
+	}
+	return json.NewEncoder(os.Stdout).Encode(status)
 }
 
 // runDefault 输出指定角色的默认配置，便于脚本生成初始配置。

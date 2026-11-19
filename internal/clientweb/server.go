@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"mtun/internal/agent"
+	"mtun/internal/autostart"
 	"mtun/internal/selfupdate"
 	"mtun/internal/webx"
 	"mtun/pkg/proto"
@@ -31,6 +32,7 @@ var distFS embed.FS
 type Server struct {
 	addr    string
 	ag      *agent.Agent
+	cfgPath string
 	auth    *webx.Auth
 	log     *slog.Logger
 	httpSrv *http.Server
@@ -47,7 +49,7 @@ func New(addr string, ag *agent.Agent, cfgPath string, log *slog.Logger) (*Serve
 	if err != nil {
 		return nil, err
 	}
-	return &Server{addr: addr, ag: ag, auth: auth, log: log}, nil
+	return &Server{addr: addr, ag: ag, cfgPath: cfgPath, auth: auth, log: log}, nil
 }
 
 func (s *Server) Run(ctx context.Context) error {
@@ -81,6 +83,7 @@ func (s *Server) handler() http.Handler {
 	mux.HandleFunc("/api/rules", s.handleRule)
 	mux.HandleFunc("/api/rules/delete", s.handleDeleteRule)
 	mux.HandleFunc("/api/rules/visibility", s.handleRuleVisibility)
+	mux.HandleFunc("/api/autostart", s.handleAutostart)
 	mux.HandleFunc("/api/update", s.handleUpdate)
 	mux.HandleFunc("/", s.handleIndex)
 
@@ -91,6 +94,56 @@ func (s *Server) handler() http.Handler {
 	mux.Handle("/static/", http.StripPrefix("/static/", http.FileServer(http.FS(staticFS))))
 
 	return s.auth.Wrap(mux)
+}
+
+// handleAutostart 查询或切换 Windows 开机自启动，不改变当前进程状态。
+func (s *Server) handleAutostart(w http.ResponseWriter, r *http.Request) {
+	m, err := autostart.New("client", s.cfgPath)
+	if err != nil {
+		webx.WriteError(w, http.StatusInternalServerError, err)
+		return
+	}
+	switch r.Method {
+	case http.MethodGet:
+		status, err := m.Status(r.Context())
+		if err != nil {
+			writeAutostartError(w, err)
+			return
+		}
+		webx.WriteJSON(w, status)
+	case http.MethodPost:
+		var req struct {
+			Enabled *bool `json:"enabled"`
+		}
+		if !decodeJSON(w, r, &req) {
+			return
+		}
+		if req.Enabled == nil {
+			webx.WriteError(w, http.StatusBadRequest, errors.New("请求必须包含 enabled 布尔值"))
+			return
+		}
+		status, err := m.Set(r.Context(), *req.Enabled)
+		if err != nil {
+			writeAutostartError(w, err)
+			return
+		}
+		webx.WriteJSON(w, status)
+	default:
+		w.WriteHeader(http.StatusMethodNotAllowed)
+	}
+}
+
+func writeAutostartError(w http.ResponseWriter, err error) {
+	code := http.StatusInternalServerError
+	switch {
+	case errors.Is(err, autostart.ErrPermission):
+		code = http.StatusForbidden
+	case errors.Is(err, autostart.ErrConflict):
+		code = http.StatusConflict
+	case errors.Is(err, autostart.ErrUnsupported):
+		code = http.StatusBadRequest
+	}
+	webx.WriteError(w, code, err)
 }
 
 // handleUpdate 支持查询与执行在线更新，更新后自动重启客户端。

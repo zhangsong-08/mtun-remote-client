@@ -227,6 +227,18 @@
           <div class="form-msg" id="panel-msg"></div>
         </div>
         <div class="panel">
+          <div class="panel-head">
+            <h2>Windows 开机自启动</h2>
+            <span class="muted" id="autostart-status">读取中...</span>
+          </div>
+          <div class="update-row">
+            <span class="muted" id="autostart-detail">只影响下次启动，不会停止当前服务</span>
+            <span class="spacer"></span>
+            <button type="button" class="secondary" id="btn-autostart" disabled>加载中</button>
+          </div>
+          <div class="form-msg" id="autostart-msg"></div>
+        </div>
+        <div class="panel">
           <div class="panel-head"><h2>安全信息</h2></div>
           <div class="info-list">
             <div><span>管理密码</span><b>已设置（终端 mtun passwd 修改）</b></div>
