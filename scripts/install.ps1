@@ -1,16 +1,23 @@
-<#
+﻿<#
 .SYNOPSIS
   mtun 服务端一键安装脚本（Windows）
 
 .DESCRIPTION
   从 GitHub Release 下载 mtun-windows-amd64.exe 或 arm64.exe，
   生成默认配置、设置管理密码、注册服务。
+  网络访问 GitHub 困难时自动切换国内加速镜像，也支持离线安装。
 
   依赖：curl.exe（Win10/11 自带）。不依赖 Go。
 
 .EXAMPLE
-  # 管理员 PowerShell 执行（注册为服务）
+  # 管理员 PowerShell 执行（自动选源，注册为服务）
   powershell -NoProfile -ExecutionPolicy Bypass -File .\install.ps1
+
+  # 国内服务器：指定镜像
+  powershell -File .\install.ps1 -Mirror https://ghfast.top/
+
+  # 离线安装（先在本机下载 exe 再传上去）
+  powershell -File .\install.ps1 -LocalFile .\mtun-windows-amd64.exe
 
   # 指定目录
   powershell -File .\install.ps1 -InstallDir D:\mtun
@@ -28,12 +35,17 @@ param(
     [string]$InstallDir = "",          # 留空 = C:\Program Files\mtun
     [string]$AdminPassword = "",       # 自动化安装时传入；为空时交互提示
     [string]$JoinPassword = "",        # 客户端接入密码；为空时自动生成
+    [string]$Mirror = $env:MTUN_MIRROR, # GitHub 加速前缀，如 https://ghfast.top/
+    [string]$LocalFile = "",           # 离线安装：使用本地 exe
     [switch]$UseNSSM = $true,          # 检测到 NSSM 时注册为系统服务
     [switch]$Uninstall = $false
 )
 
 $ErrorActionPreference = "Stop"
 $repo = "zhangsong-08/mtun"
+
+# 内置可用镜像（按顺序尝试，直连放最后）
+$mirrorList = if ($Mirror) { @($Mirror) } else { @("https://ghfast.top/", "https://gh-proxy.com/", "") }
 
 # ---------- 辅助 ----------
 function Test-Admin {
@@ -44,15 +56,21 @@ function Test-Admin {
 
 function Invoke-GitHubDownload {
     param([string]$Url, [string]$OutFile)
-    # curl.exe 自带 TLS，不依赖 PowerShell 5 的 Invoke-WebRequest 旧版
-    $sw = [Diagnostics.Stopwatch]::StartNew()
-    curl.exe -fL -o $OutFile $Url 2>&1 | Out-Null
-    if ($LASTEXITCODE -ne 0) {
-        throw "下载失败：$Url`n请检查网络或手动下载放到 $OutFile"
+    foreach ($prefix in $mirrorList) {
+        $target = "$prefix$Url"
+        $sw = [Diagnostics.Stopwatch]::StartNew()
+        curl.exe -fsSL --connect-timeout 10 --max-time 900 -o $OutFile $target 2>&1 | Out-Null
+        if ($LASTEXITCODE -eq 0 -and (Test-Path $OutFile) -and (Get-Item $OutFile).Length -gt 0) {
+            $sw.Stop()
+            $size = (Get-Item $OutFile).Length
+            $label = if ($prefix) { $prefix } else { "直连" }
+            Write-Host "  下载完成($label)，$([math]::Round($size/1MB,2)) MB，耗时 $([math]::Round($sw.Elapsed.TotalSeconds,1)) 秒"
+            return
+        }
+        $label = if ($prefix) { $prefix } else { "直连" }
+        Write-Host "  源 $label 失败，切换下一个"
     }
-    $sw.Stop()
-    $size = (Get-Item $OutFile).Length
-    Write-Host "  下载完成，$([math]::Round($size/1MB,2)) MB，耗时 $([math]::Round($sw.Elapsed.TotalSeconds,1)) 秒"
+    throw "下载失败：$Url`n国内服务器请指定镜像：-Mirror https://ghfast.top/`n或把 exe 传上来用 -LocalFile 离线安装"
 }
 
 # ---------- 参数 ----------
@@ -93,9 +111,25 @@ if ($Uninstall) {
 # ---------- 版本 ----------
 if (-not $Version) {
     Write-Host "==> 查询最新 release"
-    $latest = curl.exe -sL "https://api.github.com/repos/$repo/releases/latest" 2>&1
-    $Version = ($latest | ConvertFrom-Json).tag_name
-    if (-not $Version) { throw "无法获取最新版本，请 -Version 指定" }
+    foreach ($prefix in $mirrorList) {
+        $raw = curl.exe -fsSL --connect-timeout 8 --max-time 25 "${prefix}https://api.github.com/repos/$repo/releases/latest" 2>$null
+        if ($raw) {
+            try {
+                $Version = ($raw | ConvertFrom-Json).tag_name
+                if ($Version) { break }
+            } catch { }
+        }
+        # 镜像不代理 API 时，退而解析 releases/latest 的跳转地址
+        $loc = curl.exe -fsSI --connect-timeout 8 --max-time 25 "${prefix}https://github.com/$repo/releases/latest" 2>$null |
+            Select-String -Pattern "^location:" -CaseSensitive:$false | Select-Object -First 1
+        if ($loc) {
+            $Version = ($loc.ToString().Trim() -split "/")[-1]
+            if ($Version) { break }
+        }
+    }
+    if (-not $Version) {
+        throw "无法获取最新版本（网络不通）。请用 -Version 指定，例如：-Version v0.2.1 -Mirror https://ghfast.top/"
+    }
 }
 
 # ---------- 架构 ----------
@@ -111,21 +145,31 @@ $url  = "https://github.com/$repo/releases/download/$Version/$tag"
 $sum  = "https://github.com/$repo/releases/download/$Version/checksums.txt"
 $tmp  = Join-Path $env:TEMP "mtun-install.exe"
 
-Write-Host "==> 下载 $url"
-Invoke-GitHubDownload -Url $url -OutFile $tmp
+if ($LocalFile) {
+    Write-Host "==> 离线安装，使用本地文件 $LocalFile"
+    if (-not (Test-Path $LocalFile)) { throw "文件不存在: $LocalFile" }
+    Copy-Item $LocalFile $tmp -Force
+} else {
+    Write-Host "==> 下载 $url"
+    Invoke-GitHubDownload -Url $url -OutFile $tmp
+}
 
 # checksum 校验（失败不阻塞）
-$sumTmp = Join-Path $env:TEMP "mtun-checksums.txt"
-try {
-    curl.exe -sL -o $sumTmp $sum 2>$null
-    if ((Get-Item $sumTmp -ErrorAction SilentlyContinue).Length -gt 0) {
-        $local = (Get-FileHash $tmp -Algorithm SHA256).Hash.ToLower()
-        $match = Select-String -Path $sumTmp -Pattern "^\s*$local\s+\*\s*$tag\s*$" -SimpleMatch
-        if ($match) { Write-Host "==> checksum 校验通过" }
-        else        { Write-Host "==> 警告：checksum 不匹配，请核实下载来源" }
-    }
-} catch { }
-Remove-Item $sumTmp -Force -ErrorAction SilentlyContinue
+if (-not $LocalFile) {
+    $sumTmp = Join-Path $env:TEMP "mtun-checksums.txt"
+    try {
+        Invoke-GitHubDownload -Url $sum -OutFile $sumTmp
+        if ((Get-Item $sumTmp -ErrorAction SilentlyContinue).Length -gt 0) {
+            $local = (Get-FileHash $tmp -Algorithm SHA256).Hash.ToLower()
+            $line = Get-Content $sumTmp | Where-Object { ($_ -split '\s+')[1] -eq $tag } | Select-Object -First 1
+            $want = if ($line) { ($line -split '\s+')[0].ToLower() } else { "" }
+            if ($want -and $want -eq $local) { Write-Host "==> checksum 校验通过" }
+            elseif (-not $want)             { Write-Host "==> 跳过 checksum（清单中没有 $tag）" }
+            else                            { Write-Host "==> 警告：checksum 不匹配，请核实下载来源" }
+        }
+    } catch { Write-Host "==> 跳过 checksum（下载失败）" }
+    Remove-Item $sumTmp -Force -ErrorAction SilentlyContinue
+}
 
 Move-Item $tmp $exe -Force
 & $exe version
@@ -200,9 +244,9 @@ if ($useService) {
     Start-Sleep -Seconds 3
     $running = Get-Service $service -ErrorAction SilentlyContinue
     if ($running -and $running.Status -eq "Running") {
-        Write-Host "✅ mtun 已作为系统服务启动"
+        Write-Host "[OK] mtun 已作为系统服务启动"
     } else {
-        Write-Host "❌ 服务启动失败，请查看 logs/server.err"
+        Write-Host "[X] 服务启动失败，请查看 logs/server.err"
         exit 1
     }
 } else {
@@ -217,9 +261,9 @@ if ($useService) {
     Start-Sleep -Seconds 3
     $p = Get-Process mtun -ErrorAction SilentlyContinue
     if ($p) {
-        Write-Host "✅ mtun 已启动（PID $($p.Id)）"
+        Write-Host "[OK] mtun 已启动（PID $($p.Id)）"
     } else {
-        Write-Host "❌ 进程未留存，查看 $logDir\server.err"
+        Write-Host "[X] 进程未留存，查看 $logDir\server.err"
         exit 1
     }
 
@@ -260,5 +304,5 @@ Write-Host "  查看日志:       Get-Content $logDir\server.log -Tail 50"
 Write-Host "  停止:           Get-Process mtun | Stop-Process"
 Write-Host "  卸载:           powershell -File install.ps1 -Uninstall"
 Write-Host ""
-Write-Host "  ⚠️  如果是公网服务器，请放行防火墙端口：10000/TCP、10100-10999/TCP"
-Write-Host "  ⚠️  别忘了把接入密码填给客户端"
+Write-Host "  [!]  如果是公网服务器，请放行防火墙端口：10000/TCP、10100-10999/TCP"
+Write-Host "  [!]  别忘了把接入密码填给客户端"
