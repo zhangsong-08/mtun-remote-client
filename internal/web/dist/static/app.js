@@ -158,7 +158,6 @@ function renderPanelInfo(p) {
   $("ov-panel-addr").textContent = p.dashboard || "-";
   $("ov-session").textContent = `${p.session_minutes} 分钟`;
   $("ov-pagesize").textContent = `${p.page_size} 条`;
-function renderPanelInfo(p) {
   $("p-dashboard").value = p.dashboard || "";
   $("p-session").value = p.session_minutes;
   $("p-pagesize").value = p.page_size;
@@ -450,19 +449,26 @@ function navigate() {
 }
 
 async function refresh() {
-  try {
-    const [status, nodes, sys] = await Promise.all([
-      getJSON("/api/status"),
-      getJSON("/api/nodes"),
-      getJSON("/api/system"),
-    ]);
-    renderStatus(status);
-    state.nodes = nodes || [];
+  const results = await Promise.allSettled([
+    getJSON("/api/status"),
+    getJSON("/api/nodes"),
+    getJSON("/api/system"),
+  ]);
+  const [status, nodes, sys] = results;
+  if (status.status === "fulfilled") renderStatus(status.value);
+  if (nodes.status === "fulfilled") {
+    state.nodes = nodes.value || [];
     renderNodes();
     renderRules();
-    renderSystem(sys);
-  } catch (err) {
+  }
+  if (sys.status === "fulfilled") renderSystem(sys.value);
+
+  const failed = results.filter((r) => r.status === "rejected");
+  failed.forEach((r) => console.warn("接口不可用:", r.reason));
+  if (failed.length === results.length) {
     $("uptime").textContent = "控制台连接中断";
+  } else if (failed.length > 0) {
+    $("uptime").textContent = "部分数据不可用";
   }
 }
 
