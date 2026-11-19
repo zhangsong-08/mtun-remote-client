@@ -552,7 +552,7 @@ func runUpdate(args []string, logger *slog.Logger) error {
 	if u.Repo == "" {
 		return errors.New("未配置更新仓库：请设置 MTUN_UPDATE_REPO=owner/repo（或构建时注入 version.Repo）")
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
 	defer cancel()
 
 	rel, available, err := u.Check(ctx)

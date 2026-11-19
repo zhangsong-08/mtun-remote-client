@@ -45,19 +45,33 @@ type Updater struct {
 	Repo    string
 	Current string
 	Token   string
+	Mirrors []string
 	Log     *slog.Logger
 	client  *http.Client
 }
+
+// defaultMirrors 是 GitHub 发布包的加速镜像前缀，按顺序尝试，空字符串表示直连。
+var defaultMirrors = []string{"https://ghfast.top/", "https://gh-proxy.com/", ""}
 
 func New(log *slog.Logger) *Updater {
 	repo := strings.TrimSpace(os.Getenv("MTUN_UPDATE_REPO"))
 	if repo == "" {
 		repo = version.Repo
 	}
+	mirrors := defaultMirrors
+	// MTUN_UPDATE_MIRROR 可用逗号分隔多个前缀，留空项表示直连
+	if v := strings.TrimSpace(os.Getenv("MTUN_UPDATE_MIRROR")); v != "" {
+		parts := strings.Split(v, ",")
+		for i := range parts {
+			parts[i] = strings.TrimSpace(parts[i])
+		}
+		mirrors = parts
+	}
 	return &Updater{
 		Repo:    repo,
 		Current: version.Version,
 		Token:   strings.TrimSpace(os.Getenv("MTUN_GITHUB_TOKEN")),
+		Mirrors: mirrors,
 		Log:     log,
 		client: &http.Client{
 			// 更新包可能有十几 MB，弱网下 2 分钟不够；整体仍由调用方 context 兜底。
@@ -157,6 +171,28 @@ func (u *Updater) setHeaders(req *http.Request) {
 }
 
 func (u *Updater) download(ctx context.Context, url string) ([]byte, error) {
+	// API 请求不走镜像，只有 github.com 的发布包才需要加速
+	if !strings.Contains(url, "github.com/") || strings.Contains(url, "api.github.com/") {
+		return u.fetch(ctx, url)
+	}
+	var lastErr error
+	for _, prefix := range u.Mirrors {
+		attemptCtx, cancel := context.WithTimeout(ctx, 2*time.Minute)
+		data, err := u.fetch(attemptCtx, prefix+url)
+		cancel()
+		if err == nil {
+			return data, nil
+		}
+		lastErr = err
+		u.Log.Warn("下载源失败，切换下一个", "mirror", prefix, "err", err)
+	}
+	if lastErr == nil {
+		lastErr = errors.New("没有可用的下载源")
+	}
+	return nil, fmt.Errorf("下载更新包失败（已尝试全部源）: %w", lastErr)
+}
+
+func (u *Updater) fetch(ctx context.Context, url string) ([]byte, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
 		return nil, err
