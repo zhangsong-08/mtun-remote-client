@@ -13,6 +13,7 @@ import (
 	"fmt"
 	"html/template"
 	"log/slog"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -212,6 +213,8 @@ func (a *Auth) Wrap(next http.Handler) http.Handler {
 			a.log.Warn("已拦截跨站写请求",
 				"origin", r.Header.Get("Origin"),
 				"host", r.Host,
+				"forwarded_host", r.Header.Get("X-Forwarded-Host"),
+				"sec_fetch_site", r.Header.Get("Sec-Fetch-Site"),
 				"method", r.Method,
 				"path", r.URL.Path)
 			http.Error(w, "forbidden origin", http.StatusForbidden)
@@ -628,10 +631,34 @@ func allowedOrigin(r *http.Request) bool {
 	if err != nil || u.Host == "" {
 		return false
 	}
-	if strings.EqualFold(u.Host, r.Host) {
-		return true
+	// 收集「本服务对外暴露的地址」：直连时是 Host，
+	// 经过反向代理时外部地址在 X-Forwarded-Host 里，Host 会变成内网地址。
+	candidates := []string{r.Host}
+	for _, v := range r.Header.Values("X-Forwarded-Host") {
+		for _, h := range strings.Split(v, ",") {
+			if h = strings.TrimSpace(h); h != "" {
+				candidates = append(candidates, h)
+			}
+		}
+	}
+	for _, h := range candidates {
+		if strings.EqualFold(u.Host, h) {
+			return true
+		}
+		// 端口映射场景：外部 8080 映射到内部 10004，主机名相同但端口不同。
+		if strings.EqualFold(u.Hostname(), hostOnly(h)) {
+			return true
+		}
 	}
 	return isLoopbackHost(u.Hostname())
+}
+
+// hostOnly 从 host[:port] 或 [ipv6]:port 中取出主机名。
+func hostOnly(hostport string) string {
+	if h, _, err := net.SplitHostPort(hostport); err == nil {
+		return strings.Trim(h, "[]")
+	}
+	return strings.Trim(hostport, "[]")
 }
 
 func isLoopbackHost(host string) bool {

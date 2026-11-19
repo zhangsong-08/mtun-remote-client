@@ -233,3 +233,43 @@ func TestAllowedHost(t *testing.T) {
 		}
 	}
 }
+
+func TestAllowedOrigin(t *testing.T) {
+	cases := []struct {
+		name    string
+		method  string
+		host    string
+		origin  string
+		sfs     string
+		fwdHost string
+		want    bool
+	}{
+		{name: "读请求直接放行", method: http.MethodGet, host: "1.2.3.4:10004", origin: "https://evil.com", want: true},
+		{name: "命令行无 Origin", method: http.MethodPost, host: "1.2.3.4:10004", want: true},
+		{name: "同源直连", method: http.MethodPost, host: "1.2.3.4:10004", origin: "http://1.2.3.4:10004", want: true},
+		{name: "浏览器同源标记", method: http.MethodPost, host: "1.2.3.4:10004", origin: "http://1.2.3.4:10004", sfs: "same-origin", want: true},
+		{name: "反代保留外部 Host", method: http.MethodPost, host: "127.0.0.1:10004", origin: "https://panel.example.com", fwdHost: "panel.example.com", want: true},
+		{name: "反代改写 Host 无 SFS", method: http.MethodPost, host: "127.0.0.1:10004", origin: "https://panel.example.com", want: false},
+		{name: "端口映射同主机", method: http.MethodPost, host: "1.2.3.4:10004", origin: "http://1.2.3.4:8080", want: true},
+		{name: "跨站来源拒绝", method: http.MethodPost, host: "1.2.3.4:10004", origin: "https://evil.example.com", want: false},
+		{name: "IPv6 同源", method: http.MethodPost, host: "[2408:1::1]:10004", origin: "http://[2408:1::1]:10004", want: true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			r := httptest.NewRequest(tc.method, "http://"+tc.host+"/api/panel", nil)
+			r.Host = tc.host
+			if tc.origin != "" {
+				r.Header.Set("Origin", tc.origin)
+			}
+			if tc.sfs != "" {
+				r.Header.Set("Sec-Fetch-Site", tc.sfs)
+			}
+			if tc.fwdHost != "" {
+				r.Header.Set("X-Forwarded-Host", tc.fwdHost)
+			}
+			if got := allowedOrigin(r); got != tc.want {
+				t.Errorf("allowedOrigin() = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
