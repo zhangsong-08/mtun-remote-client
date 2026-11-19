@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+# Copyright (c) 2026 song08
+# SPDX-License-Identifier: MIT
+#
 # 服务端启动脚本：接入密码由终端设置，管理密码首次启动时交互设置。
 set -euo pipefail
 

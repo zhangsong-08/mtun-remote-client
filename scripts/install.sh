@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+# Copyright (c) 2026 song08
+# SPDX-License-Identifier: MIT
+#
 # mtun 服务端一键安装脚本（Linux）
 #
 # 用法:

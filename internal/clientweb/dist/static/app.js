@@ -1,3 +1,5 @@
+/* Copyright (c) 2026 song08 | SPDX-License-Identifier: MIT */
+
 const $ = (id) => document.getElementById(id);
 
 const state = {
