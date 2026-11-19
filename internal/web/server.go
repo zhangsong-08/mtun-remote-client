@@ -19,6 +19,7 @@ import (
 	"sync"
 	"time"
 
+	"mtun/internal/autostart"
 	"mtun/internal/config"
 	"mtun/internal/control"
 	"mtun/internal/selfupdate"
@@ -120,6 +121,7 @@ func (s *Server) handler() http.Handler {
 	mux.HandleFunc("/api/system", s.handleSystem)
 	mux.HandleFunc("/api/panel", s.handlePanel)
 	mux.HandleFunc("/api/panel/restart", s.handlePanelRestart)
+	mux.HandleFunc("/api/autostart", s.handleAutostart)
 	mux.HandleFunc("/api/update", s.handleUpdate)
 	mux.HandleFunc("/", s.handleIndex)
 
@@ -392,6 +394,59 @@ func (s *Server) handleRuleVisibility(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	webx.WriteJSON(w, map[string]any{"ok": true, "visibility": visibility, "visible_to": visibleTo})
+}
+
+// handleAutostart 查询或切换 Windows 开机自启动，不改变当前进程状态。
+func (s *Server) handleAutostart(w http.ResponseWriter, r *http.Request) {
+	m, err := autostart.New(string(config.RoleServer), s.cfgPath)
+	if err != nil {
+		webx.WriteError(w, http.StatusInternalServerError, err)
+		return
+	}
+	switch r.Method {
+	case http.MethodGet:
+		status, err := m.Status(r.Context())
+		if err != nil {
+			writeAutostartError(w, err)
+			return
+		}
+		webx.WriteJSON(w, status)
+	case http.MethodPost:
+		if !strings.HasPrefix(r.Header.Get("Content-Type"), "application/json") {
+			webx.WriteError(w, http.StatusUnsupportedMediaType, errors.New("请求需为 application/json"))
+			return
+		}
+		var req struct {
+			Enabled *bool `json:"enabled"`
+		}
+		dec := json.NewDecoder(http.MaxBytesReader(w, r.Body, 4096))
+		dec.DisallowUnknownFields()
+		if err := dec.Decode(&req); err != nil || req.Enabled == nil {
+			webx.WriteError(w, http.StatusBadRequest, errors.New("请求必须包含 enabled 布尔值"))
+			return
+		}
+		status, err := m.Set(r.Context(), *req.Enabled)
+		if err != nil {
+			writeAutostartError(w, err)
+			return
+		}
+		webx.WriteJSON(w, status)
+	default:
+		w.WriteHeader(http.StatusMethodNotAllowed)
+	}
+}
+
+func writeAutostartError(w http.ResponseWriter, err error) {
+	code := http.StatusInternalServerError
+	switch {
+	case errors.Is(err, autostart.ErrPermission):
+		code = http.StatusForbidden
+	case errors.Is(err, autostart.ErrConflict):
+		code = http.StatusConflict
+	case errors.Is(err, autostart.ErrUnsupported):
+		code = http.StatusBadRequest
+	}
+	webx.WriteError(w, code, err)
 }
 
 // handleUpdate 支持查询与执行在线更新，更新后自动重启。

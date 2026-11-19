@@ -8,6 +8,7 @@ const state = {
   peerQuery: "",
   updateAvailable: false,
   serverPrefilled: false,
+  autostart: null,
 };
 
 const ROUTES = new Set(["overview", "server", "rules", "peers", "update"]);
@@ -18,7 +19,16 @@ async function getJSON(url) {
     location.href = "/login";
     throw new Error("unauthorized");
   }
-  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  if (!res.ok) {
+    let msg = `HTTP ${res.status}`;
+    try {
+      const data = await res.json();
+      if (data.error) msg = data.error;
+    } catch (_) {
+      // 忽略非 JSON 响应
+    }
+    throw new Error(msg);
+  }
   return res.json();
 }
 
@@ -440,6 +450,63 @@ async function applyUpdate() {
   }
 }
 
+let autostartLoading = false;
+
+function renderAutostart() {
+  const s = state.autostart;
+  if (!s) return;
+  const mode = {
+    scheduled_task: "计划任务", task: "计划任务",
+    nssm: "NSSM 系统服务", service: "Windows 服务",
+    startup_folder: "启动文件夹", startup: "启动文件夹", startup_link: "旧版启动项",
+  }[s.mode] || "";
+  const trigger = {
+    startup: "开机后，无需登录", boot: "开机后，无需登录", at_startup: "开机后，无需登录", atstartup: "开机后，无需登录",
+    logon: "当前用户登录后", at_logon: "当前用户登录后", atlogon: "当前用户登录后",
+  }[String(s.trigger || "").toLowerCase()] || "";
+  $("autostart-status").textContent = !s.supported ? "当前系统不可用" : (s.conflict ? "配置冲突" : (s.enabled ? "已启用" : "未启用"));
+  const detail = s.enabled ? [mode, trigger, s.message] : [s.message];
+  $("autostart-detail").textContent = detail.filter(Boolean).join(" · ") || "只影响下次启动，不会停止当前客户端";
+  $("btn-autostart").textContent = autostartLoading ? "处理中..." : (s.enabled ? "禁用自启动" : "启用自启动");
+  $("btn-autostart").disabled = autostartLoading || !s.supported;
+}
+
+async function loadAutostart() {
+  if (autostartLoading) return;
+  autostartLoading = true;
+  $("autostart-msg").className = "form-msg";
+  renderAutostart();
+  try {
+    state.autostart = await getJSON("/api/autostart");
+    $("autostart-msg").textContent = "";
+  } catch (err) {
+    $("autostart-status").textContent = "读取失败";
+    $("autostart-msg").textContent = err.message;
+  } finally {
+    autostartLoading = false;
+    renderAutostart();
+  }
+}
+
+async function toggleAutostart() {
+  if (!state.autostart || autostartLoading) return;
+  const enabled = !state.autostart.enabled;
+  autostartLoading = true;
+  $("autostart-msg").className = "form-msg";
+  $("autostart-msg").textContent = "";
+  renderAutostart();
+  try {
+    state.autostart = await postJSON("/api/autostart", { enabled });
+    $("autostart-msg").className = "form-msg ok";
+    $("autostart-msg").textContent = enabled ? "已启用开机自启动" : "已禁用开机自启动，当前客户端保持运行";
+  } catch (err) {
+    $("autostart-msg").textContent = err.message;
+  } finally {
+    autostartLoading = false;
+    renderAutostart();
+  }
+}
+
 function navigate() {
   const name = location.hash.replace(/^#\/?/, "") || "overview";
   const page = ROUTES.has(name) ? name : "overview";
@@ -450,6 +517,7 @@ function navigate() {
     a.classList.toggle("active", a.dataset.page === page);
   });
   if (page === "update") loadUpdate();
+  if (page === "overview") loadAutostart();
 }
 
 $("rule-search").addEventListener("input", (e) => {
@@ -465,6 +533,7 @@ $("r-visibility").addEventListener("change", (e) => {
 });
 $("btn-check").addEventListener("click", loadUpdate);
 $("btn-update").addEventListener("click", applyUpdate);
+$("btn-autostart").addEventListener("click", toggleAutostart);
 window.addEventListener("hashchange", navigate);
 
 navigate();

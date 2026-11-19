@@ -57,13 +57,11 @@ func DataDir() string {
 }
 
 func ServiceHint() string {
-	exe := filepath.Join(ConfigDir(), "mtun.exe")
-	cfg := filepath.Join(ConfigDir(), "server.yaml")
-	return fmt.Sprintf(`Windows 服务（管理员 PowerShell）:
-  sc.exe create mtun binPath= "%s server -c %s" start= auto
-  sc.exe start mtun
-  sc.exe delete mtun
+	return fmt.Sprintf(`Windows 自动启动:
+  推荐使用安装脚本（管理员 PowerShell）:
+    powershell.exe -ExecutionPolicy Bypass -File scripts\install.ps1
+  服务端和客户端也可在各自管理面板中开关自动启动。
+  没有 NSSM 服务时使用计划任务：管理员为 SYSTEM/开机启动，普通用户为当前用户/登录启动。
 
-说明: 当前骨架未内置 SCM 集成，正式版用 golang.org/x/sys/windows/svc 实现。
-配置目录: %s`, exe, cfg, ConfigDir())
+配置目录: %s`, ConfigDir())
 }

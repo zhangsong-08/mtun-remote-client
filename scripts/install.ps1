@@ -7,13 +7,13 @@
 
 .DESCRIPTION
   从 GitHub Release 下载 mtun-windows-amd64.exe 或 arm64.exe，
-  生成默认配置、设置管理密码、注册服务。
+  生成默认配置、设置管理密码，并通过 mtun 统一配置开机自启。
   网络访问 GitHub 困难时自动切换国内加速镜像，也支持离线安装。
 
   依赖：curl.exe（Win10/11 自带）。不依赖 Go。
 
 .EXAMPLE
-  # 管理员 PowerShell 执行（自动选源，注册为服务）
+  # 管理员 PowerShell 执行（自动选源，配置开机自启）
   powershell -NoProfile -ExecutionPolicy Bypass -File .\install.ps1
 
   # 国内服务器：指定镜像
@@ -34,27 +34,34 @@
 
 [CmdletBinding()]
 param(
-    [string]$Version = "",             # 留空 = 最新 release
-    [string]$InstallDir = "",          # 留空 = C:\Program Files\mtun
-    [string]$AdminPassword = "",       # 自动化安装时传入；为空时交互提示
-    [string]$JoinPassword = "",        # 客户端接入密码；为空时自动生成
+    [string]$Version = "",              # 留空 = 最新 release；离线安装时为 offline
+    [string]$InstallDir = "",           # 留空 = C:\Program Files\mtun 或 %USERPROFILE%\mtun
+    [string]$AdminPassword = "",        # 自动化安装时传入；为空时交互提示
+    [string]$JoinPassword = "",         # 客户端接入密码；为空时保留已有值或自动生成
     [string]$Mirror = $env:MTUN_MIRROR, # GitHub 加速前缀，如 https://ghfast.top/
-    [string]$LocalFile = "",           # 离线安装：使用本地 exe
-    [switch]$UseNSSM = $true,          # 检测到 NSSM 时注册为系统服务
+    [string]$LocalFile = "",            # 离线安装：使用本地 exe
+    [switch]$UseNSSM = $true,           # 兼容旧命令行；自启方式由 mtun 统一管理
     [switch]$Uninstall = $false
 )
 
 $ErrorActionPreference = "Stop"
 $repo = "zhangsong-08/mtun-remote-server"
+$role = "server"
+$service = "mtun-server"
+$taskName = "mtun-server"
 
 # 内置可用镜像（按顺序尝试，直连放最后）
 $mirrorList = if ($Mirror) { @($Mirror) } else { @("https://ghfast.top/", "https://gh-proxy.com/", "") }
 
-# ---------- 辅助 ----------
 function Test-Admin {
     $id = [Security.Principal.WindowsIdentity]::GetCurrent()
     $pr = New-Object Security.Principal.WindowsPrincipal($id)
     return $pr.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+}
+
+function Write-Utf8NoBom {
+    param([string]$Path, [string]$Value)
+    [System.IO.File]::WriteAllText($Path, $Value, [System.Text.UTF8Encoding]::new($false))
 }
 
 function Invoke-GitHubDownload {
@@ -76,17 +83,78 @@ function Invoke-GitHubDownload {
     throw "下载失败：$Url`n国内服务器请指定镜像：-Mirror https://ghfast.top/`n或把 exe 传上来用 -LocalFile 离线安装"
 }
 
+function Stop-InstalledInstance {
+    # 先停任务/服务，避免停止进程后被自动重新拉起。
+    if (Get-Command Stop-ScheduledTask -ErrorAction SilentlyContinue) {
+        Get-ScheduledTask -TaskName $taskName -TaskPath '\' -ErrorAction SilentlyContinue |
+            Stop-ScheduledTask -ErrorAction SilentlyContinue
+    }
+    $svc = Get-Service -Name $service -ErrorAction SilentlyContinue
+    if ($svc -and $svc.Status -ne "Stopped") {
+        Stop-Service -Name $service -Force -ErrorAction SilentlyContinue
+    }
+
+    # 只终止 ExecutablePath 与当前安装路径完全一致的进程。
+    $processes = @(Get-CimInstance Win32_Process -Filter "Name = 'mtun.exe'" -ErrorAction SilentlyContinue |
+        Where-Object { $_.ExecutablePath -and [string]::Equals($_.ExecutablePath, $exe, [StringComparison]::OrdinalIgnoreCase) })
+    foreach ($p in $processes) {
+        Stop-Process -Id $p.ProcessId -Force -ErrorAction Stop
+        Wait-Process -Id $p.ProcessId -Timeout 10 -ErrorAction SilentlyContinue
+    }
+    if ($processes.Count -gt 0) { Start-Sleep -Milliseconds 500 }
+}
+
+function Remove-AutostartArtifacts {
+    if (Get-Command nssm -ErrorAction SilentlyContinue) {
+        & nssm stop $service 2>$null | Out-Null
+        & nssm remove $service confirm 2>$null | Out-Null
+    }
+    if (Get-Service -Name $service -ErrorAction SilentlyContinue) {
+        Stop-Service -Name $service -Force -ErrorAction SilentlyContinue
+        & sc.exe delete $service 2>$null | Out-Null
+    }
+
+    if (Get-Command Unregister-ScheduledTask -ErrorAction SilentlyContinue) {
+        Get-ScheduledTask -TaskName $taskName -TaskPath '\' -ErrorAction SilentlyContinue |
+            Unregister-ScheduledTask -Confirm:$false -ErrorAction SilentlyContinue
+    } else {
+        & schtasks.exe /Delete /TN $taskName /F 2>$null | Out-Null
+    }
+
+    $startupDir = [Environment]::GetFolderPath("Startup")
+    Remove-Item (Join-Path $startupDir "mtun-server.lnk") -Force -ErrorAction SilentlyContinue
+}
+
+function Enable-Autostart {
+    $output = & $exe __autostart enable -role $role -c $cfg -start
+    $exitCode = $LASTEXITCODE
+    $json = ($output -join [Environment]::NewLine).Trim()
+    if ($exitCode -ne 0) {
+        throw "配置开机自启失败（退出码 $exitCode）：$json"
+    }
+    try {
+        $result = $json | ConvertFrom-Json
+    } catch {
+        throw "mtun __autostart enable 未返回有效 JSON：$json"
+    }
+    if (-not $result.supported -or -not $result.enabled) {
+        throw "开机自启未启用：$json"
+    }
+    if ($result.message) { Write-Host "  $($result.message)" }
+    Write-Host "[OK] mtun 已启动并配置开机自启（$($result.mode)）"
+}
+
 # ---------- 参数 ----------
 if (-not $InstallDir) {
     if (Test-Admin) { $InstallDir = "C:\Program Files\mtun" }
     else            { $InstallDir = "$env:USERPROFILE\mtun" }
 }
-$binDir  = Join-Path $InstallDir "bin"
-$cfgDir  = Join-Path $InstallDir "configs"
-$logDir  = Join-Path $InstallDir "logs"
-$cfg     = Join-Path $cfgDir "server.yaml"
-$exe     = Join-Path $binDir "mtun.exe"
-$service = "mtun-server"
+$InstallDir = [System.IO.Path]::GetFullPath($InstallDir)
+$binDir = Join-Path $InstallDir "bin"
+$cfgDir = Join-Path $InstallDir "configs"
+$logDir = Join-Path $InstallDir "logs"
+$cfg = Join-Path $cfgDir "server.yaml"
+$exe = Join-Path $binDir "mtun.exe"
 
 Write-Host "======================================================"
 Write-Host " mtun 服务端安装"
@@ -98,20 +166,21 @@ Write-Host ""
 # ---------- 卸载 ----------
 if ($Uninstall) {
     Write-Host "==> 卸载 mtun"
-    if (Get-Command nssm -ErrorAction SilentlyContinue) {
-        & nssm stop $service 2>$null | Out-Null
-        & nssm remove $service confirm 2>$null | Out-Null
-    } else {
-        Get-Process mtun -ErrorAction SilentlyContinue | Stop-Process -Force
+    Stop-InstalledInstance
+    if (Test-Path $exe) {
+        $removeOutput = & $exe __autostart remove -role $role -c $cfg 2>&1
+        if ($LASTEXITCODE -ne 0) {
+            Write-Warning "mtun __autostart remove 失败，将继续清理旧自启动项：$($removeOutput -join ' ')"
+        }
     }
-    $startupDir = [Environment]::GetFolderPath("Startup")
-    Remove-Item (Join-Path $startupDir "mtun-server.lnk") -Force -ErrorAction SilentlyContinue
+    Remove-AutostartArtifacts
     Remove-Item $InstallDir -Recurse -Force -ErrorAction SilentlyContinue
-    Write-Host "已卸载 mtun（若装过系统服务可能还需要手动删）"
+    Write-Host "已卸载 mtun：$InstallDir"
     exit 0
 }
 
 # ---------- 版本 ----------
+if (-not $Version -and $LocalFile) { $Version = "offline" }
 if (-not $Version) {
     Write-Host "==> 查询最新 release"
     foreach ($prefix in $mirrorList) {
@@ -122,7 +191,6 @@ if (-not $Version) {
                 if ($Version) { break }
             } catch { }
         }
-        # 镜像不代理 API 时，退而解析 releases/latest 的跳转地址
         $loc = curl.exe -fsSI --connect-timeout 8 --max-time 25 "${prefix}https://github.com/$repo/releases/latest" 2>$null |
             Select-String -Pattern "^location:" -CaseSensitive:$false | Select-Object -First 1
         if ($loc) {
@@ -131,22 +199,20 @@ if (-not $Version) {
         }
     }
     if (-not $Version) {
-        throw "无法获取最新版本（网络不通）。请用 -Version 指定，例如：-Version v0.2.1 -Mirror https://ghfast.top/"
+        throw "无法获取最新版本（网络不通）。请用 -Version 指定，或使用 -LocalFile 离线安装"
     }
 }
 
 # ---------- 架构 ----------
-$arch = (Get-CimInstance Win32_OperatingSystem).OSArchitecture
-if ($arch -like "64*") { $tag = "mtun-windows-amd64.exe" }
-else                   { $tag = "mtun-windows-arm64.exe" }
-
+$archText = "$env:PROCESSOR_ARCHITECTURE $env:PROCESSOR_ARCHITEW6432 $((Get-CimInstance Win32_OperatingSystem).OSArchitecture)"
+$tag = if ($archText -match "ARM64") { "mtun-windows-arm64.exe" } else { "mtun-windows-amd64.exe" }
 Write-Host "==> 使用版本 $Version，资产 $tag"
 
-# ---------- 下载 ----------
+# ---------- 下载与校验 ----------
 New-Item -ItemType Directory -Force -Path $binDir,$cfgDir,$logDir | Out-Null
-$url  = "https://github.com/$repo/releases/download/$Version/$tag"
-$sum  = "https://github.com/$repo/releases/download/$Version/checksums.txt"
-$tmp  = Join-Path $env:TEMP "mtun-install.exe"
+$url = "https://github.com/$repo/releases/download/$Version/$tag"
+$sum = "https://github.com/$repo/releases/download/$Version/checksums.txt"
+$tmp = Join-Path $env:TEMP ("mtun-install-" + [Guid]::NewGuid().ToString("N") + ".exe")
 
 if ($LocalFile) {
     Write-Host "==> 离线安装，使用本地文件 $LocalFile"
@@ -155,34 +221,36 @@ if ($LocalFile) {
 } else {
     Write-Host "==> 下载 $url"
     Invoke-GitHubDownload -Url $url -OutFile $tmp
-}
 
-# checksum 校验（失败不阻塞）
-if (-not $LocalFile) {
-    $sumTmp = Join-Path $env:TEMP "mtun-checksums.txt"
-    try {
-        Invoke-GitHubDownload -Url $sum -OutFile $sumTmp
-        if ((Get-Item $sumTmp -ErrorAction SilentlyContinue).Length -gt 0) {
-            $local = (Get-FileHash $tmp -Algorithm SHA256).Hash.ToLower()
-            $line = Get-Content $sumTmp | Where-Object { ($_ -split '\s+')[1] -eq $tag } | Select-Object -First 1
-            $want = if ($line) { ($line -split '\s+')[0].ToLower() } else { "" }
-            if ($want -and $want -eq $local) { Write-Host "==> checksum 校验通过" }
-            elseif (-not $want)             { Write-Host "==> 跳过 checksum（清单中没有 $tag）" }
-            else                            { Write-Host "==> 警告：checksum 不匹配，请核实下载来源" }
-        }
-    } catch { Write-Host "==> 跳过 checksum（下载失败）" }
+    $sumTmp = Join-Path $env:TEMP ("mtun-checksums-" + [Guid]::NewGuid().ToString("N") + ".txt")
+    Invoke-GitHubDownload -Url $sum -OutFile $sumTmp
+    $line = Get-Content $sumTmp | Where-Object {
+        $parts = ($_.Trim() -split '\s+')
+        $parts.Count -ge 2 -and ($parts[1] -eq $tag -or $parts[1] -eq "*$tag")
+    } | Select-Object -First 1
+    $want = if ($line) { ($line.Trim() -split '\s+')[0].ToLower() } else { "" }
+    $local = (Get-FileHash $tmp -Algorithm SHA256).Hash.ToLower()
     Remove-Item $sumTmp -Force -ErrorAction SilentlyContinue
+    if (-not $want) { throw "checksum 清单中没有 $tag，拒绝安装未校验的二进制" }
+    if ($want -ne $local) {
+        Remove-Item $tmp -Force -ErrorAction SilentlyContinue
+        throw "checksum 不匹配（期望 $want，实际 $local），已拒绝安装"
+    }
+    Write-Host "==> checksum 校验通过"
 }
 
+# 替换二进制前停止当前安装实例，避免文件占用。
+Stop-InstalledInstance
 Move-Item $tmp $exe -Force
 & $exe version
+if ($LASTEXITCODE -ne 0) { throw "mtun 二进制无法执行" }
 
 # ---------- 生成配置 ----------
 if (-not (Test-Path $cfg)) {
     Write-Host "==> 生成默认配置"
-    & $exe default server | Set-Content $cfg -Encoding utf8
-    if (-not (Test-Path $cfg) -or (Get-Item $cfg).Length -eq 0) {
-        @'
+    $defaultYaml = & $exe default server | Out-String
+    if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($defaultYaml)) {
+        $defaultYaml = @'
 role: server
 control: ":10000"
 wg: ":10001"
@@ -195,14 +263,16 @@ overlay:
   server_ip: "100.64.0.1"
 publish:
   port_range: "10100-10999"
-'@ | Set-Content $cfg -Encoding utf8
+'@
     }
-    & $exe check -c $cfg -role server | Out-Null
-    if ($LASTEXITCODE -ne 0) {
-        Write-Host "配置文件校验失败，详情：" -ForegroundColor Red
-        & $exe check -c $cfg -role server
-        exit 1
-    }
+    Write-Utf8NoBom -Path $cfg -Value $defaultYaml
+}
+
+& $exe check -c $cfg -role server | Out-Null
+if ($LASTEXITCODE -ne 0) {
+    Write-Host "配置文件校验失败，详情：" -ForegroundColor Red
+    & $exe check -c $cfg -role server
+    throw "请修正 $cfg 后重试"
 }
 
 # ---------- 接入密码 ----------
@@ -216,89 +286,28 @@ if (-not $JoinPassword) {
     $JoinPassword = -join ($bytes | ForEach-Object { $_.ToString("x2") })
 }
 & $exe access -c $cfg -password $JoinPassword | Out-Null
+if ($LASTEXITCODE -ne 0) { throw "写入客户端接入密码失败" }
 
 # ---------- 管理密码 ----------
 $passFile = "$cfg.passwd"
 if (Test-Path $passFile) {
     Write-Host "==> 管理密码已存在，跳过"
 } else {
-    # mtun passwd 会提示两次输入，走 cmd.exe 才能正确交互
     Write-Host "==> 设置管理密码（至少 8 位）"
-    Write-Host "     这个密码只你自己用，别泄露。"
     if ($AdminPassword) {
-        # 非交互方式写入（mtun passwd 需要终端，这里用 SetPassword 命令模拟）
         Write-Host "  使用 -AdminPassword 指定的密码"
-        & $exe passwd -c $cfg --stdin | Out-Null  # 若 stdin 模式不可用则回退
-        # 如果上面报错，这里不做 fallback，直接让用户手工来
+        & $exe passwd -c $cfg -password $AdminPassword | Out-Null
     } else {
-        cmd /c "$exe passwd -c `"$cfg`""
+        & $exe passwd -c $cfg
     }
-    if (-not (Test-Path $passFile)) {
-        Write-Host "`n管理密码未设置，将跳过自动启动。请稍后手动执行：" -ForegroundColor Red
-        Write-Host "  cmd /c `"`"$exe`" passwd -c `"$cfg`"`""
-        exit 0
+    if ($LASTEXITCODE -ne 0 -or -not (Test-Path $passFile)) {
+        throw "管理密码未设置，安装已终止"
     }
 }
 
-# ---------- 启动 ----------
-$useService = $UseNSSM -and (Get-Command nssm -ErrorAction SilentlyContinue) -and (Test-Admin)
-
-if ($useService) {
-    Write-Host "==> 用 NSSM 注册为服务 $service"
-    & nssm stop $service 2>$null | Out-Null
-    & nssm remove $service confirm 2>$null | Out-Null
-    & nssm install $service $exe "server -c `"$cfg`"" | Out-Null
-    & nssm set $service AppDirectory $InstallDir | Out-Null
-    & nssm set $service AppStdout  (Join-Path $logDir "server.log") | Out-Null
-    & nssm set $service AppStderr  (Join-Path $logDir "server.err") | Out-Null
-    & nssm set $service Start SERVICE_AUTO_START | Out-Null
-    & nssm start $service | Out-Null
-    Start-Sleep -Seconds 3
-    $running = Get-Service $service -ErrorAction SilentlyContinue
-    if ($running -and $running.Status -eq "Running") {
-        Write-Host "[OK] mtun 已作为系统服务启动"
-    } else {
-        Write-Host "[X] 服务启动失败，请查看 logs/server.err"
-        exit 1
-    }
-} else {
-    Write-Host "==> 启动进程"
-    Get-Process mtun -ErrorAction SilentlyContinue | Stop-Process -Force
-    Start-Sleep -Milliseconds 500
-    Start-Process -FilePath $exe -ArgumentList "server","-c",$cfg `
-        -WorkingDirectory $InstallDir `
-        -RedirectStandardOutput (Join-Path $logDir "server.log") `
-        -RedirectStandardError  (Join-Path $logDir "server.err") `
-        -WindowStyle Hidden
-    Start-Sleep -Seconds 3
-    $p = Get-Process mtun -ErrorAction SilentlyContinue
-    if ($p) {
-        Write-Host "[OK] mtun 已启动（PID $($p.Id)）"
-    } else {
-        Write-Host "[X] 进程未留存，查看 $logDir\server.err"
-        exit 1
-    }
-
-    # 开机自启（仅非服务方案）
-    if (-not (Get-Command nssm -ErrorAction SilentlyContinue)) {
-        try {
-            $startup = [Environment]::GetFolderPath("Startup")
-            $lnk = Join-Path $startup "mtun-server.lnk"
-            $shell = New-Object -ComObject WScript.Shell
-            $sc = $shell.CreateShortcut($lnk)
-            $sc.TargetPath = $exe
-            $sc.Arguments = "server -c `"$cfg`""
-            $sc.WorkingDirectory = $InstallDir
-            $sc.WindowStyle = 7  # 最小化
-            $sc.Save()
-            Write-Host "  已添加到启动项（$lnk）"
-        } catch {
-            Write-Host "  未能创建启动项，请手工配置开机自启"
-        }
-        Write-Host "`n  提示：安装 NSSM 后可改为系统服务（重启/崩溃自动恢复）："
-        Write-Host "    choco install nssm  # 管理员 PowerShell 再跑一次本脚本"
-    }
-}
+# ---------- 统一开机自启与启动 ----------
+Write-Host "==> 配置开机自启并启动"
+Enable-Autostart
 
 Write-Host ""
 Write-Host "======================================================"
@@ -311,9 +320,8 @@ Write-Host "  配置:           $cfg"
 Write-Host "  日志:           $logDir"
 Write-Host "  接入密码:       $JoinPassword"
 Write-Host ""
-Write-Host "  在线更新:       & `"$exe`" update"
-Write-Host "  查看日志:       Get-Content $logDir\server.log -Tail 50"
-Write-Host "  停止:           Get-Process mtun | Stop-Process"
+Write-Host "  在线更新:       & `"$exe`" update -c `"$cfg`""
+Write-Host "  自启动状态:     & `"$exe`" __autostart status -role server -c `"$cfg`""
 Write-Host "  卸载:           powershell -File install.ps1 -Uninstall"
 Write-Host ""
 Write-Host "  [!]  如果是公网服务器，请放行防火墙端口：10000/TCP、10100-10999/TCP"
