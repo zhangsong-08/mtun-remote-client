@@ -11,7 +11,16 @@ import (
 
 	"gopkg.in/yaml.v3"
 
+	"mtun/internal/version"
 	"mtun/pkg/proto"
+)
+
+// 在线更新仓库。旧版统一发布在 LegacyUpdateRepo，
+// 过渡版本会把更新来源迁移到按角色拆分的新仓库。
+const (
+	LegacyUpdateRepo = "zhangsong-08/mtun"
+	ServerUpdateRepo = "zhangsong-08/mtun-remote-server"
+	ClientUpdateRepo = "zhangsong-08/mtun-remote-client"
 )
 
 type Role string
@@ -86,7 +95,36 @@ func Load(path string, want Role) (*Config, error) {
 	if err := cfg.validate(want); err != nil {
 		return nil, err
 	}
+	// 过渡升级：旧版安装配置的 update_repo 指向旧仓库，
+	// 启动时自动迁移到按角色拆分的新仓库并落盘，保证后续在线更新可用。
+	if resolved := ResolveUpdateRepo(cfg.UpdateRepo, want); resolved != "" && resolved != strings.TrimSpace(cfg.UpdateRepo) {
+		cfg.UpdateRepo = resolved
+		_ = Save(path, &cfg)
+	}
 	return &cfg, nil
+}
+
+// ResolveUpdateRepo 返回角色对应的在线更新仓库。
+// 旧仓库 "zhangsong-08/mtun" 会映射到分仓后的新仓库；
+// 配置为空时仅在当前二进制仍由旧仓库构建（version.Repo 为旧仓库）时迁移，
+// 避免影响自行构建或其他来源的程序。
+func ResolveUpdateRepo(repo string, role Role) string {
+	target := ServerUpdateRepo
+	if role == RoleClient {
+		target = ClientUpdateRepo
+	}
+	repo = strings.TrimSpace(repo)
+	switch {
+	case repo == "":
+		if strings.EqualFold(strings.TrimSpace(version.Repo), LegacyUpdateRepo) {
+			return target
+		}
+		return ""
+	case strings.EqualFold(repo, LegacyUpdateRepo):
+		return target
+	default:
+		return repo
+	}
 }
 
 // ReadDashboard 只读取配置文件中的 dashboard 地址，供命令行工具定位本地控制台。
@@ -105,18 +143,20 @@ func ReadDashboard(path string) string {
 }
 
 // ReadUpdateRepo 只读取配置文件中的 update_repo，供命令行更新检查使用。
+// 与 Load 保持同一套旧仓库迁移规则。
 func ReadUpdateRepo(path string) string {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return ""
 	}
 	var partial struct {
+		Role       Role   `yaml:"role"`
 		UpdateRepo string `yaml:"update_repo"`
 	}
 	if err := yaml.Unmarshal(data, &partial); err != nil {
 		return ""
 	}
-	return strings.TrimSpace(partial.UpdateRepo)
+	return ResolveUpdateRepo(partial.UpdateRepo, partial.Role)
 }
 
 // Save 原子写回配置文件（客户端控制台修改服务端/规则后调用）。
