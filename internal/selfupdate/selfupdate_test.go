@@ -1,10 +1,16 @@
 package selfupdate
 
 import (
+	"context"
 	"fmt"
+	"io"
+	"log/slog"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"testing"
 )
 
@@ -53,6 +59,51 @@ func TestReplaceExecutable(t *testing.T) {
 		if info.Mode().Perm()&0o111 == 0 {
 			t.Fatal("新文件应具有可执行权限")
 		}
+	}
+}
+
+func TestFetchRetriesTruncatedBody(t *testing.T) {
+	attempts := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		attempts++
+		if attempts == 1 {
+			// 声明完整长度却提前断开，模拟 unexpected EOF。
+			w.Header().Set("Content-Length", "100")
+			_, _ = io.WriteString(w, "short")
+			return
+		}
+		w.Header().Set("Content-Type", "application/octet-stream")
+		_, _ = io.WriteString(w, strings.Repeat("x", 100))
+	}))
+	defer srv.Close()
+
+	u := &Updater{Log: slog.New(slog.NewTextHandler(io.Discard, nil)), client: srv.Client()}
+	data, err := u.fetch(context.Background(), srv.URL)
+	if err != nil {
+		t.Fatalf("fetch: %v", err)
+	}
+	if len(data) != 100 {
+		t.Fatalf("len(data)=%d, want 100", len(data))
+	}
+	if attempts != 2 {
+		t.Fatalf("attempts=%d, want 2（应重试一次）", attempts)
+	}
+}
+
+func TestFetchStopsOnNotFound(t *testing.T) {
+	attempts := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		attempts++
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer srv.Close()
+
+	u := &Updater{Log: slog.New(slog.NewTextHandler(io.Discard, nil)), client: srv.Client()}
+	if _, err := u.fetch(context.Background(), srv.URL); err == nil {
+		t.Fatal("预期 404 返回错误")
+	}
+	if attempts != 1 {
+		t.Fatalf("attempts=%d, want 1（404 不应重试）", attempts)
 	}
 }
 
