@@ -464,17 +464,46 @@ func runConnect(args []string) error {
 	if strings.TrimSpace(*server) == "" {
 		return errors.New("必须用 -server 指定服务端地址，如 -server 1.2.3.4:10000")
 	}
-	_, api, err := opts.resolve()
+	serverAddr := strings.TrimSpace(*server)
+
+	// 客户端已在运行：通过本地控制台热更新，立即触发重连
+	if _, api, err := opts.resolve(); err == nil {
+		ctx, cancel := requestContext()
+		updateErr := api.SetServer(ctx, serverAddr, *key)
+		cancel()
+		if updateErr == nil {
+			fmt.Println("已保存服务端配置，客户端将自动重连；可用 mtun status 查看结果")
+			return nil
+		}
+	}
+
+	// 客户端尚未启动：直接写入配置文件，启动后生效
+	if opts.cfg == "" {
+		return errors.New("本地控制台未运行。请先启动客户端，或加 -c client.yaml 直接写入配置")
+	}
+	if _, err := os.Stat(opts.cfg); os.IsNotExist(err) {
+		data, derr := config.DefaultYAML(config.RoleClient)
+		if derr != nil {
+			return derr
+		}
+		if werr := os.WriteFile(opts.cfg, data, 0o600); werr != nil {
+			return werr
+		}
+	}
+	cfg, err := config.Load(opts.cfg, config.RoleClient)
 	if err != nil {
 		return err
 	}
-	ctx, cancel := requestContext()
-	defer cancel()
-
-	if err := api.SetServer(ctx, *server, *key); err != nil {
-		return err
+	cfg.Server = serverAddr
+	if err := config.Save(opts.cfg, cfg); err != nil {
+		return fmt.Errorf("写入配置失败: %w", err)
 	}
-	fmt.Println("已保存服务端配置，客户端将自动重连；可用 mtun status 查看结果")
+	if k := strings.TrimSpace(*key); k != "" {
+		if err := config.SaveJoinPassword(opts.cfg, k); err != nil {
+			return err
+		}
+	}
+	fmt.Printf("客户端未运行，配置已写入 %s\n启动后生效：mtun client -c %s\n", opts.cfg, opts.cfg)
 	return nil
 }
 
