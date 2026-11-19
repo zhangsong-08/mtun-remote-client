@@ -1,3 +1,6 @@
+// Copyright (c) 2026 song08
+// SPDX-License-Identifier: MIT
+
 // Package selfupdate 实现在线更新：从 GitHub Release 下载对应平台的二进制，
 // 校验 checksums.txt，替换当前可执行文件并拉起新进程。
 // 只替换程序本身，不触碰任何配置文件。

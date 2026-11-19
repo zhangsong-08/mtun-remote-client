@@ -1,3 +1,6 @@
+// Copyright (c) 2026 song08
+// SPDX-License-Identifier: MIT
+
 package app
 
 import (

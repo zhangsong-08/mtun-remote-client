@@ -1,3 +1,6 @@
+# Copyright (c) 2026 song08
+# SPDX-License-Identifier: MIT
+
 role: client
 # 节点名默认取主机名；显式填写会覆盖
 node: nas

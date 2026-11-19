@@ -1,3 +1,6 @@
+// Copyright (c) 2026 song08
+// SPDX-License-Identifier: MIT
+
 package version
 
 // Version 由构建参数注入：-X mtun/internal/version.Version=x.y.z

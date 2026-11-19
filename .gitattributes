@@ -1,3 +1,6 @@
+# Copyright (c) 2026 song08
+# SPDX-License-Identifier: MIT
+
 * text=auto
 
 # Shell 脚本在 Linux 上执行，必须保持 LF，否则会报 $'\r': command not found

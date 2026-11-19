@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+# Copyright (c) 2026 song08
+# SPDX-License-Identifier: MIT
+#
 # 客户端启动脚本：可自动配置服务端。
 # 用法: bash scripts/start-client.sh [客户端配置] [服务端地址] [接入密码]
 set -euo pipefail

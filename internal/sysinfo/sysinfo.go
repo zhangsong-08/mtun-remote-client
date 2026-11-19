@@ -1,3 +1,6 @@
+// Copyright (c) 2026 song08
+// SPDX-License-Identifier: MIT
+
 // Package sysinfo 定期采集本机运行指标，供管理面板首页展示。
 package sysinfo
 
