@@ -6,6 +6,7 @@
 package platform
 
 import (
+	"fmt"
 	"os"
 	"os/exec"
 	"strconv"
@@ -116,6 +117,38 @@ func unitName(unit string) string {
 	unit = strings.TrimSpace(unit)
 	unit = strings.TrimSuffix(unit, ".service")
 	return unit
+}
+
+// RenderServiceFile 生成一个完整的 systemd unit 文件内容。
+// unit：unit 名（不含 .service）。exe：mtun 二进制绝对路径。
+// role：server 或 client。cfg：配置文件绝对路径。
+//
+// 生成的 service 具备：Restart=always、自动拉起、网络就绪后启动、
+// 低权限运行（NoNewPrivileges=true）等安全加固。
+func RenderServiceFile(unit, exe, role, cfg string) string {
+	var sb strings.Builder
+	sb.WriteString("[Unit]\n")
+	sb.WriteString(fmt.Sprintf("Description=mtun %s (%s)\n", role, unit))
+	sb.WriteString("After=network-online.target\n")
+	sb.WriteString("Wants=network-online.target\n")
+	sb.WriteString("\n")
+	sb.WriteString("[Service]\n")
+	sb.WriteString(fmt.Sprintf("ExecStart=%s %s -c %s\n", exe, role, cfg))
+	sb.WriteString("Restart=always\n")
+	sb.WriteString("RestartSec=3\n")
+	sb.WriteString("AmbientCapabilities=CAP_NET_ADMIN CAP_NET_BIND_SERVICE\n")
+	sb.WriteString("NoNewPrivileges=true\n")
+	sb.WriteString("ProtectSystem=full\n")
+	sb.WriteString("ProtectHome=true\n")
+	sb.WriteString("PrivateDevices=true\n")
+	sb.WriteString("ProtectKernelTunables=true\n")
+	sb.WriteString("ProtectKernelModules=true\n")
+	sb.WriteString("ProtectControlGroups=true\n")
+	sb.WriteString("MemoryMax=512M\n")
+	sb.WriteString("\n")
+	sb.WriteString("[Install]\n")
+	sb.WriteString("WantedBy=multi-user.target\n")
+	return sb.String()
 }
 
 func ServiceHint() string {
