@@ -352,6 +352,7 @@ type nodeView struct {
 	BanUntil        string             `json:"ban_until,omitempty"`
 	QueuedRules     int                `json:"queued_rules"`
 	HasPassword     bool               `json:"has_password"`
+	PasswordUpdated string             `json:"password_updated_at,omitempty"`
 	Access          access.Policy      `json:"access"`
 	Rules           []proto.RuleStatus `json:"rules"`
 }
@@ -568,6 +569,9 @@ func (s *Server) handleNodes(w http.ResponseWriter, _ *http.Request) {
 		if s.ctl != nil {
 			view.QueuedRules = s.ctl.PendingCount(n.ID)
 			view.HasPassword = s.ctl.HasNodePassword(n.ID)
+			if entry, ok := s.ctl.NodePassword(n.ID); ok {
+				view.PasswordUpdated = entry.UpdatedAt.Format(time.RFC3339)
+			}
 		}
 		out = append(out, view)
 	}
