@@ -14,6 +14,7 @@ import (
 
 	"mtun/internal/config"
 	"mtun/internal/control"
+	"mtun/internal/secret"
 	"mtun/pkg/proto"
 )
 
@@ -48,29 +49,29 @@ type RuleStatus struct {
 
 // Agent 监管客户端与服务端的连接：配置变化后持久化并重连。
 type Agent struct {
-	mu       sync.Mutex
-	cfg      *config.Config
-	cfgPath  string
-	joinPass string
-	version  string
-	log      *slog.Logger
-	restart  chan struct{}
-	up       bool
-	lastErr  string
-	self     proto.SelfInfo
-	statuses []proto.RuleStatus
-	peers    []proto.PeerNode
-	since    time.Time
+	mu         sync.Mutex
+	cfg        *config.Config
+	cfgPath    string
+	joinSecret string
+	version    string
+	log        *slog.Logger
+	restart    chan struct{}
+	up         bool
+	lastErr    string
+	self       proto.SelfInfo
+	statuses   []proto.RuleStatus
+	peers      []proto.PeerNode
+	since      time.Time
 }
 
-func New(cfg *config.Config, cfgPath, joinPass, version string, log *slog.Logger) *Agent {
+func New(cfg *config.Config, cfgPath, joinSecret, version string, log *slog.Logger) *Agent {
 	return &Agent{
-		cfg:      cfg,
-		cfgPath:  cfgPath,
-		joinPass: joinPass,
-		version:  version,
-		log:      log,
-		restart:  make(chan struct{}, 1),
+		cfg:        cfg,
+		cfgPath:    cfgPath,
+		joinSecret: joinSecret,
+		version:    version,
+		log:        log,
+		restart:    make(chan struct{}, 1),
 	}
 }
 
@@ -159,7 +160,7 @@ func (a *Agent) Run(ctx context.Context) error {
 func (a *Agent) params() (string, string, []proto.PublishRule) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	return a.cfg.Server, a.joinPass, append([]proto.PublishRule(nil), a.cfg.Publish.Rules...)
+	return a.cfg.Server, a.joinSecret, append([]proto.PublishRule(nil), a.cfg.Publish.Rules...)
 }
 
 func (a *Agent) applyStatus(st proto.Status) {
@@ -271,18 +272,19 @@ func (a *Agent) SetServer(server, password string) error {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 
-	if password == "" && a.joinPass == "" {
+	if password == "" && a.joinSecret == "" {
 		return fmt.Errorf("首次配置必须填写接入密码（由服务端管理员通过终端设置）")
 	}
 	a.cfg.Server = server
 	if password != "" {
-		a.joinPass = password
+		// 内存与磁盘都只保留哈希，明文密码用完即弃。
+		a.joinSecret = secret.Seed(password)
 	}
 	if err := config.Save(a.cfgPath, a.cfg); err != nil {
 		return err
 	}
 	if password != "" {
-		if err := config.SaveJoinPassword(a.cfgPath, a.joinPass); err != nil {
+		if err := config.SaveJoinSecret(a.cfgPath, a.joinSecret); err != nil {
 			return err
 		}
 	}
@@ -407,7 +409,7 @@ func (a *Agent) Snapshot() Status {
 		Node:      a.cfg.Node,
 		Server:    a.cfg.Server,
 		Dashboard: a.cfg.Dashboard,
-		HasAccess: a.joinPass != "",
+		HasAccess: a.joinSecret != "",
 		Connected: a.up,
 		Error:     a.lastErr,
 		NodeID:    a.self.NodeID,

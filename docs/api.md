@@ -34,7 +34,7 @@ mtun 是中继式异地组网工具，不安装 TUN 驱动，由服务端和客�
 | 密码 | 用途 | 存储位置 |
 | --- | --- | --- |
 | 管理密码 | 登录 Web 控制台，至少 8 位 | `<配置文件>.passwd`（仅保存哈希） |
-| 接入密码 | 客户端连接服务端时校验 | 服务端 `<server.yaml>.join` |
+| 接入密码 | 客户端连接服务端时校验 | 服务端 `<server.yaml>.join`（只存哈希） |
 | API Token | 终端命令和自动化调用 API | `<配置文件>.apitoken`（0600） |
 
 此外，服务端提供 6 位数字 PIN（`<server.yaml>.pin`，只保存哈希），用于面板中修改面板端口、接入端口、Web 密码和接入密码时的二次验证。PIN 在面板“安全设置”中首次设置，也可在终端重置：
@@ -572,6 +572,40 @@ Invoke-RestMethod -Uri "$base/api/status" -Headers $h
   - 仅修改 `admin_password` 时不重启，返回 `{"saved":true,"relogin":true}`，需要重新登录。
   - PIN 未设置返回 `409 {"need_setup":true}`；错误 `401`；连续 5 次错误 `423 {"retry_after":60}`。
 
+### 5.13 节点独立接入密码
+
+每个节点可以拥有自己的接入密码，与全局共享接入密码（`<配置>.join`）相互独立。
+数据保存在 `<配置>.nodepass.json`（0600），仅保存在服务端，客户端面板不提供该功能。
+
+- `POST /api/nodes/password`（必须携带 PIN）
+  ```json
+  {"pin":"123456","node":"PC-1","action":"random"}
+  ```
+  `action` 取值：
+
+  | 取值 | 说明 | 返回 |
+  | --- | --- | --- |
+  | `show` | 查看该节点是否已设置密码 | `{"ok":true,"node":"PC-1","set":true,"updated_at":"..."}`（不返回密码） |
+  | `random` | 随机生成 32 位密码并保存 | `{"ok":true,"node":"PC-1","set":true,"password":"...","updated_at":"..."}` |
+  | `set` | 使用 `password` 字段指定密码（≥8 位） | `{"ok":true,"node":"PC-1","set":true,"updated_at":"..."}` |
+  | `clear` | 删除独立密码，回落到默认密码策略 | `{"ok":true,"node":"PC-1","set":false}` |
+
+  密码只在 `random` 的响应中出现一次，之后无法再次查看。
+  服务端磁盘上的 `<配置>.nodepass.json` 只保存密码的本地哈希（PBKDF2-SHA256），不保存明文。
+
+- `GET /api/nodes/password/default` → `{"allow_default":true|false}`（无需 PIN）。
+- `POST /api/nodes/password/default`（必须携带 PIN）→ `{"pin":"123456","allow":false}`。
+  关闭后，未设置独立密码的节点将无法接入。
+
+接入判定规则：
+
+1. 节点设置了独立密码 → 只接受该密码，忽略默认密码开关；
+2. 节点未设置独立密码 → 只有 `allow_default` 为 `true` 时才接受默认接入密码；
+3. 密码在 TLS 握手阶段按 SNI 指纹选证书，因此错误的密码会直接握手失败；
+4. 密码变更后不主动断开现有连接，新密码在节点下次重连时生效。
+
+`GET /api/nodes` 的每个节点新增 `has_password` 字段，用于面板显示是否已设置独立密码。
+
 ---
 
 ## 6. 规则可见范围
@@ -637,10 +671,12 @@ Invoke-RestMethod -Uri "$base/api/status" -Headers $h
 
 - `<配置>.passwd`：管理密码哈希，删除后需重新设置。
 - `<配置>.apitoken`：API Token，自动生成，勿泄露。
-- `<配置>.join`：接入密码明文（服务端为权威值，客户端为副本）。
+- `<配置>.join`：接入密码的本地哈希（服务端为权威值，客户端为副本）。
+  旧版明文文件在首次启动时自动迁移为哈希，之后磁盘上不再出现明文密码。
 - `<配置>.pin`：服务端敏感操作 PIN 哈希（仅服务端）。
 - `<server.yaml>.access.json`：节点访问策略（封禁、时段、IP 段、系统）。
 - `<server.yaml>.rules.json`：离线节点的待同步规则操作。
+- `<server.yaml>.nodepass.json`：每节点独立接入密码（只存哈希）与默认密码开关。
 
 ---
 

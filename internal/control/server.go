@@ -20,6 +20,7 @@ import (
 
 	"mtun/internal/access"
 	"mtun/internal/config"
+	"mtun/internal/nodepass"
 	"mtun/internal/pending"
 	"mtun/internal/secure"
 	"mtun/internal/state"
@@ -28,16 +29,17 @@ import (
 )
 
 // Server 是控制面：TCP + TLS 1.3 + yamux。
-// 接入密码由双方共享，服务端不保存客户端列表以外的任何凭据。
+// 默认使用全局共享接入密码；配置了节点独立密码后，每个节点必须使用自己的密码。
 type Server struct {
-	addr    string
-	token   string
-	cfgPath string
-	reg     *state.Registry
-	tunnels *tunnel.Manager
-	access  *access.Store
-	pending *pending.Store
-	log     *slog.Logger
+	addr      string
+	token     string
+	cfgPath   string
+	reg       *state.Registry
+	tunnels   *tunnel.Manager
+	access    *access.Store
+	pending   *pending.Store
+	passwords *nodepass.Store
+	log       *slog.Logger
 
 	mu    sync.Mutex
 	conns map[string]*clientConn
@@ -84,15 +86,24 @@ func NewServer(addr, token, cfgPath string, reg *state.Registry, tunnels *tunnel
 		} else {
 			s.pending = st
 		}
+		passPath := cfgPath + ".nodepass.json"
+		if st, err := nodepass.Load(passPath); err != nil {
+			log.Warn("读取节点接入密码失败，使用空集合", "path", passPath, "err", err)
+			st, _ = nodepass.Load("")
+			s.passwords = st
+		} else {
+			s.passwords = st
+		}
 	} else {
 		s.access, _ = access.Load("")
 		s.pending, _ = pending.Load("")
+		s.passwords, _ = nodepass.Load("")
 	}
 	return s
 }
 
 func (s *Server) Run(ctx context.Context) error {
-	tlsCfg, err := secure.ServerConfig(s.token)
+	tlsCfg, err := secure.ServerConfigFor(s.pickToken)
 	if err != nil {
 		return err
 	}
@@ -134,6 +145,20 @@ func yamuxConfig() *yamux.Config {
 func (s *Server) handle(ctx context.Context, conn net.Conn) {
 	defer conn.Close()
 	remote := conn.RemoteAddr().String()
+
+	// 从 TLS 握手拿到客户端实际使用的接入密码，后续用它校验节点身份。
+	usedToken := ""
+	if tc, ok := conn.(*tls.Conn); ok {
+		if err := tc.HandshakeContext(ctx); err != nil {
+			s.log.Warn("tls handshake failed", "from", remote, "err", err)
+			return
+		}
+		usedToken = s.tokenForSNI(tc.ConnectionState().ServerName)
+		if usedToken == "" {
+			s.log.Warn("无法识别本次连接使用的接入密码", "from", remote)
+			return
+		}
+	}
 
 	sess, err := yamux.Server(conn, yamuxConfig())
 	if err != nil {
@@ -192,6 +217,12 @@ func (s *Server) handle(ctx context.Context, conn net.Conn) {
 			if s.tunnels.Banned(msg.NodeID) {
 				s.log.Warn("reject banned node", "node", msg.NodeID, "from", remote)
 				_ = cc.send(proto.TypeError, proto.Error{Message: "节点已被管理员临时封禁，请稍后重连"})
+				return
+			}
+			// 校验本次连接使用的密码是否属于该节点（节点独立密码或允许的默认密码）。
+			if err := s.passwords.Authorize(msg.NodeID, usedToken, s.token); err != nil {
+				s.log.Warn("reject by node password", "node", msg.NodeID, "from", remote, "err", err)
+				_ = cc.send(proto.TypeError, proto.Error{Message: err.Error()})
 				return
 			}
 			if err := s.access.Check(msg.NodeID, msg.OS, host, time.Now()); err != nil {
@@ -445,4 +476,78 @@ func (s *Server) ClearAccessPolicy(id string) error {
 // PendingCount 返回节点待同步的规则操作数量。
 func (s *Server) PendingCount(id string) int {
 	return s.pending.Count(id)
+}
+
+// pickToken 在 TLS 握手阶段根据 SNI 选择该连接应使用的接入密码。
+// 旧客户端（SNI 为空或固定 "mtun"）在允许默认密码时回退到全局密码。
+func (s *Server) pickToken(sni string) (string, bool) {
+	t := s.tokenForSNI(sni)
+	if t == "" {
+		return "", false
+	}
+	return t, true
+}
+
+// tokenForSNI 把 SNI 指纹反查成实际密码；空字符串表示无法识别。
+func (s *Server) tokenForSNI(sni string) string {
+	if sni == "" || sni == "mtun" {
+		if s.passwords.AllowDefault() {
+			return s.token
+		}
+		return ""
+	}
+	for _, t := range s.passwords.CandidateSeeds(s.token) {
+		if secure.TokenFingerprint(t) == sni {
+			return t
+		}
+	}
+	return ""
+}
+
+// NodePasswords 返回默认密码开关与全部节点独立密码。
+func (s *Server) NodePasswords() (bool, map[string]nodepass.Entry) {
+	return s.passwords.AllowDefault(), s.passwords.List()
+}
+
+// NodePassword 返回单个节点的独立密码。
+func (s *Server) NodePassword(nodeID string) (nodepass.Entry, bool) {
+	return s.passwords.Get(nodeID)
+}
+
+// HasNodePassword 判断节点是否设置了独立密码。
+func (s *Server) HasNodePassword(nodeID string) bool {
+	_, ok := s.passwords.Get(nodeID)
+	return ok
+}
+
+// SetNodePassword 为节点指定接入密码。
+func (s *Server) SetNodePassword(nodeID, password string) (nodepass.Entry, error) {
+	return s.passwords.Set(nodeID, password)
+}
+
+// SetNodeRandomPassword 为节点生成随机接入密码，明文只在返回值中出现一次。
+func (s *Server) SetNodeRandomPassword(nodeID string) (string, nodepass.Entry, error) {
+	pw, entry, err := s.passwords.SetRandom(nodeID)
+	if err == nil {
+		s.log.Info("已为节点生成随机接入密码（仅保存哈希）", "node", strings.TrimSpace(nodeID))
+	}
+	return pw, entry, err
+}
+
+// ClearNodePassword 删除节点的独立密码，使其回落到默认密码。
+func (s *Server) ClearNodePassword(nodeID string) error {
+	err := s.passwords.Clear(nodeID)
+	if err == nil {
+		s.log.Info("已清除节点独立接入密码", "node", strings.TrimSpace(nodeID))
+	}
+	return err
+}
+
+// SetAllowDefaultPassword 切换「允许默认密码接入」开关。
+func (s *Server) SetAllowDefaultPassword(allow bool) error {
+	err := s.passwords.SetAllowDefault(allow)
+	if err == nil {
+		s.log.Info("默认密码接入开关已更新", "allow", allow)
+	}
+	return err
 }

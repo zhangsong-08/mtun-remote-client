@@ -398,6 +398,133 @@ func (s *Server) handleUnban(w http.ResponseWriter, r *http.Request) {
 	webx.WriteJSON(w, map[string]any{"ok": true, "unbanned": true})
 }
 
+// handleNodePassword 查看、随机重置、指定或清除单个节点的独立接入密码。
+// 这些操作会暴露或改变节点凭据，因此统一要求 PIN 二次验证。
+func (s *Server) handleNodePassword(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		return
+	}
+	if s.ctl == nil {
+		webx.WriteError(w, http.StatusInternalServerError, errors.New("控制面未初始化"))
+		return
+	}
+	if !isJSON(r) {
+		webx.WriteError(w, http.StatusUnsupportedMediaType, errors.New("请求需为 application/json"))
+		return
+	}
+	var req struct {
+		PIN      string `json:"pin"`
+		Node     string `json:"node"`
+		Action   string `json:"action"`
+		Password string `json:"password"`
+	}
+	if err := decodeJSONBody(r, &req); err != nil {
+		webx.WriteError(w, http.StatusBadRequest, err)
+		return
+	}
+	if err := s.requirePIN(strings.TrimSpace(req.PIN)); err != nil {
+		s.writePINError(w, err)
+		return
+	}
+	node := strings.TrimSpace(req.Node)
+	if node == "" {
+		webx.WriteError(w, http.StatusBadRequest, errors.New("缺少节点 ID"))
+		return
+	}
+
+	switch strings.ToLower(strings.TrimSpace(req.Action)) {
+	case "show":
+		// 只返回是否已设置与更新时间；明文与哈希都不返回。
+		entry, ok := s.ctl.NodePassword(node)
+		if !ok {
+			webx.WriteJSON(w, map[string]any{"ok": true, "node": node, "set": false})
+			return
+		}
+		webx.WriteJSON(w, map[string]any{
+			"ok":         true,
+			"node":       node,
+			"set":        true,
+			"updated_at": entry.UpdatedAt,
+		})
+	case "random":
+		pw, entry, err := s.ctl.SetNodeRandomPassword(node)
+		if err != nil {
+			webx.WriteError(w, http.StatusBadRequest, err)
+			return
+		}
+		webx.WriteJSON(w, map[string]any{
+			"ok":         true,
+			"node":       node,
+			"set":        true,
+			"password":   pw,
+			"updated_at": entry.UpdatedAt,
+		})
+	case "set":
+		entry, err := s.ctl.SetNodePassword(node, req.Password)
+		if err != nil {
+			webx.WriteError(w, http.StatusBadRequest, err)
+			return
+		}
+		webx.WriteJSON(w, map[string]any{
+			"ok":         true,
+			"node":       node,
+			"set":        true,
+			"updated_at": entry.UpdatedAt,
+		})
+	case "clear":
+		if err := s.ctl.ClearNodePassword(node); err != nil {
+			webx.WriteError(w, http.StatusInternalServerError, err)
+			return
+		}
+		webx.WriteJSON(w, map[string]any{"ok": true, "node": node, "set": false})
+	default:
+		webx.WriteError(w, http.StatusBadRequest, errors.New("action 只能是 show/random/set/clear"))
+	}
+}
+
+// handleDefaultPassword 查询或切换「允许使用默认密码接入」开关。
+// 查询不需要 PIN；切换会改变全局接入策略，需要 PIN。
+func (s *Server) handleDefaultPassword(w http.ResponseWriter, r *http.Request) {
+	if s.ctl == nil {
+		webx.WriteError(w, http.StatusInternalServerError, errors.New("控制面未初始化"))
+		return
+	}
+	switch r.Method {
+	case http.MethodGet:
+		allow, _ := s.ctl.NodePasswords()
+		webx.WriteJSON(w, map[string]any{"allow_default": allow})
+	case http.MethodPost:
+		if !isJSON(r) {
+			webx.WriteError(w, http.StatusUnsupportedMediaType, errors.New("请求需为 application/json"))
+			return
+		}
+		var req struct {
+			PIN   string `json:"pin"`
+			Allow *bool  `json:"allow"`
+		}
+		if err := decodeJSONBody(r, &req); err != nil {
+			webx.WriteError(w, http.StatusBadRequest, err)
+			return
+		}
+		if err := s.requirePIN(strings.TrimSpace(req.PIN)); err != nil {
+			s.writePINError(w, err)
+			return
+		}
+		if req.Allow == nil {
+			webx.WriteError(w, http.StatusBadRequest, errors.New("缺少 allow 字段"))
+			return
+		}
+		if err := s.ctl.SetAllowDefaultPassword(*req.Allow); err != nil {
+			webx.WriteError(w, http.StatusInternalServerError, err)
+			return
+		}
+		webx.WriteJSON(w, map[string]any{"ok": true, "allow_default": *req.Allow})
+	default:
+		w.WriteHeader(http.StatusMethodNotAllowed)
+	}
+}
+
 func cleanList(in []string) []string {
 	out := make([]string, 0, len(in))
 	for _, v := range in {

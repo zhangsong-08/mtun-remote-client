@@ -146,6 +146,9 @@
           <div class="toolbar">
             <input id="node-search" class="search" placeholder="搜索节点、覆盖 IP 或端点">
             <span class="spacer"></span>
+            <label class="inline" title="关闭后，未设置独立密码的节点将无法接入">
+              <input type="checkbox" id="allow-default-password"> 允许默认密码接入
+            </label>
             <span class="muted" id="node-count"></span>
           </div>
           <div class="table-wrap">
@@ -380,6 +383,29 @@
             <button type="button" class="secondary" data-close>取消</button>
           </div>
           <div class="form-msg" id="access-msg"></div>
+        </form>
+      </dialog>
+
+      <dialog id="password-dialog">
+        <form id="password-form" class="form-grid">
+          <h2>节点接入密码</h2>
+          <label>节点
+            <input id="p-node" readonly>
+          </label>
+          <div class="muted" id="p-status">未设置独立密码，使用默认密码接入</div>
+          <label>接入密码
+            <input id="p-value" autocomplete="off" spellcheck="false" placeholder="留空可点“随机生成”，密码只保存哈希">
+          </label>
+          <label>PIN
+            <input id="p-pin" type="password" inputmode="numeric" maxlength="6" placeholder="6 位 PIN">
+          </label>
+          <div class="dialog-actions">
+            <button type="button" class="secondary" id="p-random">随机生成</button>
+            <button type="submit" class="btn">保存</button>
+            <button type="button" class="secondary" id="p-clear">清除</button>
+            <button type="button" class="secondary" data-close>取消</button>
+          </div>
+          <div class="form-msg" id="password-msg"></div>
         </form>
       </dialog>
 

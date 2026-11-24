@@ -11,10 +11,13 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"crypto/x509/pkix"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"math/big"
 	"time"
+
+	"mtun/internal/secret"
 )
 
 // derivePrefix 是密钥派生的域分隔前缀，改动会让新旧版本不兼容。
@@ -69,13 +72,20 @@ func verifyPeer(expected ed25519.PublicKey) func([][]byte, [][]*x509.Certificate
 	}
 }
 
+// Seed 把明文密码转换成双方一致的本地哈希（用于派生证书）。
+// 服务端只保存 seed，客户端在设置密码时即时计算，二者都不落盘明文。
+func Seed(password string) string {
+	return secret.Seed(password)
+}
+
 // ServerConfig 要求客户端出示证书，并在回调中与派生公钥比对。
-func ServerConfig(token string) (*tls.Config, error) {
-	cert, err := certificate(token)
+// seed 是接入密码的本地哈希（secret.Seed 的产物），不是明文密码。
+func ServerConfig(seed string) (*tls.Config, error) {
+	cert, err := certificate(seed)
 	if err != nil {
 		return nil, err
 	}
-	expected := Derive(token).Public().(ed25519.PublicKey)
+	expected := Derive(seed).Public().(ed25519.PublicKey)
 	return &tls.Config{
 		Certificates:          []tls.Certificate{cert},
 		MinVersion:            tls.VersionTLS13,
@@ -84,18 +94,45 @@ func ServerConfig(token string) (*tls.Config, error) {
 	}, nil
 }
 
-// ClientConfig 使用与 token 绑定的证书校验服务端身份。
+// TokenFingerprint 返回本地哈希对应的 SNI 标识。
+// 客户端在 ClientHello 中携带它，服务端据此选择正确的口令证书，
+// 从而支持「每个节点一套密码」：不必在握手中暴露密码或哈希本身。
+func TokenFingerprint(seed string) string {
+	sum := sha256.Sum256([]byte(derivePrefix + "sni|" + seed))
+	return "mtun-" + hex.EncodeToString(sum[:8])
+}
+
+// ServerConfigFor 返回按客户端 SNI 动态选择口令的 TLS 配置。
+// tokenFor 收到 SNI，返回应使用的口令；返回 false 表示拒绝握手。
+// 常见的空 SNI 或旧客户端的 "mtun" 由调用方决定是否回退到默认口令。
+func ServerConfigFor(tokenFor func(sni string) (string, bool)) (*tls.Config, error) {
+	return &tls.Config{
+		MinVersion: tls.VersionTLS13,
+		ClientAuth: tls.RequireAnyClientCert,
+		GetConfigForClient: func(hello *tls.ClientHelloInfo) (*tls.Config, error) {
+			token, ok := tokenFor(hello.ServerName)
+			if !ok || token == "" {
+				return nil, errors.New("mtun: 接入密码无效或不允许接入")
+			}
+			return ServerConfig(token)
+		},
+	}, nil
+}
+
+// ClientConfig 使用与 seed 绑定的证书校验服务端身份。
 // InsecureSkipVerify 只用于跳过系统根证书链校验（自签证书必然不在根证书中），
 // 身份校验由 VerifyPeerCertificate 完成，不能删除。
-func ClientConfig(token string) (*tls.Config, error) {
-	cert, err := certificate(token)
+func ClientConfig(seed string) (*tls.Config, error) {
+	cert, err := certificate(seed)
 	if err != nil {
 		return nil, err
 	}
-	expected := Derive(token).Public().(ed25519.PublicKey)
+	expected := Derive(seed).Public().(ed25519.PublicKey)
 	return &tls.Config{
-		Certificates:          []tls.Certificate{cert},
-		ServerName:            "mtun",
+		Certificates: []tls.Certificate{cert},
+		// ServerName 用口令指纹而非固定 "mtun"，服务端据此匹配到该口令的证书，
+		// 从而支持每个节点使用不同的接入密码。
+		ServerName:            TokenFingerprint(seed),
 		MinVersion:            tls.VersionTLS13,
 		InsecureSkipVerify:    true, // 仅跳过链校验，见上方说明
 		VerifyPeerCertificate: verifyPeer(expected),

@@ -137,6 +137,8 @@ func (s *Server) handler() http.Handler {
 	mux.HandleFunc("/api/nodes/rules", s.handleRuleChange)
 	mux.HandleFunc("/api/nodes/access", s.handleNodeAccess)
 	mux.HandleFunc("/api/nodes/unban", s.handleUnban)
+	mux.HandleFunc("/api/nodes/password", s.handleNodePassword)
+	mux.HandleFunc("/api/nodes/password/default", s.handleDefaultPassword)
 	mux.HandleFunc("/api/rules/visibility", s.handleRuleVisibility)
 	mux.HandleFunc("/api/system", s.handleSystem)
 	mux.HandleFunc("/api/panel", s.handlePanel)
@@ -349,6 +351,7 @@ type nodeView struct {
 	Banned          bool               `json:"banned"`
 	BanUntil        string             `json:"ban_until,omitempty"`
 	QueuedRules     int                `json:"queued_rules"`
+	HasPassword     bool               `json:"has_password"`
 	Access          access.Policy      `json:"access"`
 	Rules           []proto.RuleStatus `json:"rules"`
 }
@@ -564,6 +567,7 @@ func (s *Server) handleNodes(w http.ResponseWriter, _ *http.Request) {
 		}
 		if s.ctl != nil {
 			view.QueuedRules = s.ctl.PendingCount(n.ID)
+			view.HasPassword = s.ctl.HasNodePassword(n.ID)
 		}
 		out = append(out, view)
 	}
