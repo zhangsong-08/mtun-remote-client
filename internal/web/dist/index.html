@@ -169,7 +169,7 @@
       <section class="page" id="page-rules" hidden>
         <div class="page-head">
           <h1>转发规则</h1>
-          <span class="muted">汇总所有客户端上报的端口映射，可调整规则的可见范围</span>
+          <span class="muted">汇总所有客户端上报的端口映射，可增删改规则与可见范围</span>
         </div>
         <div class="panel">
           <div class="toolbar">
@@ -203,18 +203,15 @@
       <section class="page" id="page-panel" hidden>
         <div class="page-head">
           <h1>面板管理</h1>
-          <span class="muted">修改后需重启面板生效</span>
+          <span class="muted">敏感设置需 PIN 二次验证</span>
         </div>
-        <div class="note">默认只监听回环地址（127.0.0.1），仅本机可访问。如需远程访问，填写 <code>0.0.0.0:10004</code> 或服务器网卡 IP，并务必使用强密码、通过防火墙限制来源 IP。修改后请点击“重启面板”。</div>
+        <div class="note">面板默认只监听回环地址（127.0.0.1），仅本机可访问。修改面板端口、接入端口、Web 密码或接入密码需要输入 6 位 PIN，保存后服务端会自动重启，页面约 5 秒后恢复。</div>
         <div class="panel">
           <div class="panel-head">
             <h2>常规设置</h2>
             <span class="muted" id="panel-path"></span>
           </div>
           <form class="form-grid" id="panel-form">
-            <label>面板监听地址
-              <input id="p-dashboard" placeholder="127.0.0.1:10004" autocomplete="off" required>
-            </label>
             <label>会话时长（分钟）
               <input id="p-session" type="number" min="5" max="10080" required>
             </label>
@@ -225,6 +222,47 @@
             <button type="button" class="secondary" id="btn-restart">重启面板</button>
           </form>
           <div class="form-msg" id="panel-msg"></div>
+        </div>
+        <div class="panel">
+          <div class="panel-head">
+            <h2>安全设置（需 PIN）</h2>
+            <span class="muted" id="pin-status">读取中...</span>
+          </div>
+          <form id="pin-form" class="form-grid">
+            <label id="pin-current-label" hidden>当前 PIN
+              <input id="pin-current" inputmode="numeric" maxlength="6" autocomplete="off" placeholder="6 位数字">
+            </label>
+            <label>新 PIN
+              <input id="pin-new" inputmode="numeric" maxlength="6" autocomplete="off" placeholder="6 位数字" required>
+            </label>
+            <label>确认 PIN
+              <input id="pin-confirm" inputmode="numeric" maxlength="6" autocomplete="off" placeholder="再次输入" required>
+            </label>
+            <button type="submit" class="btn" id="btn-pin-save">设置 PIN</button>
+          </form>
+          <div class="form-msg" id="pin-msg"></div>
+        </div>
+        <div class="panel">
+          <div class="panel-head"><h2>端口与密码</h2></div>
+          <form id="secure-form" class="form-grid">
+            <label>面板端口
+              <input id="s-dashboard" placeholder="127.0.0.1:10004" autocomplete="off">
+            </label>
+            <label>接入端口
+              <input id="s-control" placeholder=":10000" autocomplete="off">
+            </label>
+            <label>新 Web 访问密码
+              <input id="s-admin-pass" type="password" autocomplete="new-password" placeholder="留空不修改">
+            </label>
+            <label>新用户接入密码
+              <input id="s-join-token" type="password" autocomplete="new-password" placeholder="留空不修改">
+            </label>
+            <label>PIN
+              <input id="s-pin" inputmode="numeric" maxlength="6" autocomplete="off" placeholder="6 位数字" required>
+            </label>
+            <button type="submit" class="btn" id="btn-secure-save">保存敏感设置</button>
+          </form>
+          <div class="form-msg" id="secure-msg"></div>
         </div>
         <div class="panel">
           <div class="panel-head">
@@ -241,7 +279,7 @@
         <div class="panel">
           <div class="panel-head"><h2>安全信息</h2></div>
           <div class="info-list">
-            <div><span>管理密码</span><b>已设置（终端 mtun passwd 修改）</b></div>
+            <div><span>管理密码</span><b>已设置（可在上方修改，或终端 mtun passwd）</b></div>
             <div><span>访问范围</span><b id="panel-scope">按监听地址决定</b></div>
             <div><span>会话策略</span><b>绝对有效期 + 空闲 30 分钟自动失效</b></div>
             <div><span>配置文件</span><b class="mono" id="panel-config">-</b></div>
@@ -268,6 +306,82 @@
           <div class="update-notes" id="update-notes"></div>
         </div>
       </section>
+
+      <dialog id="rule-dialog">
+        <form id="rule-form" class="form-grid">
+          <h2 id="rule-dialog-title">新增规则</h2>
+          <label>节点
+            <input id="r-node" readonly>
+          </label>
+          <label>规则名称
+            <input id="r-name" maxlength="64" required autocomplete="off">
+          </label>
+          <label>协议
+            <select id="r-proto">
+              <option value="tcp">tcp</option>
+              <option value="http">http</option>
+            </select>
+          </label>
+          <label>公网端口
+            <input id="r-listen" type="number" min="10000" max="65535" required>
+          </label>
+          <label>内网目标
+            <input id="r-target" placeholder="127.0.0.1:80" required autocomplete="off">
+          </label>
+          <label>可见范围
+            <select id="r-visibility">
+              <option value="all">所有人</option>
+              <option value="self">仅自己</option>
+              <option value="nodes">指定节点</option>
+            </select>
+          </label>
+          <label>可见节点（逗号分隔）
+            <input id="r-visible-to" placeholder="节点1,节点2" autocomplete="off">
+          </label>
+          <div class="dialog-actions">
+            <button type="submit" class="btn">保存</button>
+            <button type="button" class="secondary" data-close>取消</button>
+          </div>
+          <div class="form-msg" id="rule-msg"></div>
+        </form>
+      </dialog>
+
+      <dialog id="access-dialog">
+        <form id="access-form" class="form-grid">
+          <h2>节点访问策略</h2>
+          <label>节点
+            <input id="a-node" readonly>
+          </label>
+          <label>封禁时长（分钟，0 表示不封禁）
+            <input id="a-ban" type="number" min="0" max="525600" value="0">
+          </label>
+          <label class="inline"><input id="a-permanent" type="checkbox"> 永久封禁</label>
+          <label>每日允许开始
+            <input id="a-start" type="time">
+          </label>
+          <label>每日允许结束
+            <input id="a-end" type="time">
+          </label>
+          <label>允许的 IP / CIDR（逗号或换行分隔）
+            <textarea id="a-allow" rows="2" placeholder="1.2.3.0/24"></textarea>
+          </label>
+          <label>拒绝的 IP / CIDR
+            <textarea id="a-deny" rows="2" placeholder="5.6.7.8"></textarea>
+          </label>
+          <div class="os-group">
+            <span class="muted">允许的系统（不选表示不限）</span>
+            <label class="inline"><input type="checkbox" class="a-os" value="windows"> Windows</label>
+            <label class="inline"><input type="checkbox" class="a-os" value="linux"> Linux</label>
+            <label class="inline"><input type="checkbox" class="a-os" value="darwin"> macOS</label>
+          </div>
+          <div class="dialog-actions">
+            <button type="submit" class="btn">保存策略</button>
+            <button type="button" class="secondary" id="a-unban">解除限制</button>
+            <button type="button" class="secondary" data-close>取消</button>
+          </div>
+          <div class="form-msg" id="access-msg"></div>
+        </form>
+      </dialog>
 
       <footer class="copyright">
         <span>© 2026 song08</span>

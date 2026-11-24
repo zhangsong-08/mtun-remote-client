@@ -389,20 +389,29 @@ func (c *Config) validate(want Role) error {
 // 默认监听回环；允许显式配置为 0.0.0.0:10004 或服务器 IP，
 // 此时面板可从远程访问，请务必配合强密码与防火墙来源限制。
 func ValidateDashboard(addr string) error {
+	return validateListenAddr("dashboard", addr)
+}
+
+// ValidateControl 校验控制面监听地址。
+func ValidateControl(addr string) error {
+	return validateListenAddr("control", addr)
+}
+
+func validateListenAddr(field, addr string) error {
 	addr = strings.TrimSpace(addr)
 	if addr == "" {
 		return nil
 	}
 	_, port, err := net.SplitHostPort(addr)
 	if err != nil {
-		return fmt.Errorf("dashboard %q: %w", addr, err)
+		return fmt.Errorf("%s %q: %w", field, addr, err)
 	}
 	if port == "" {
-		return fmt.Errorf("dashboard %q: 缺少端口", addr)
+		return fmt.Errorf("%s %q: 缺少端口", field, addr)
 	}
 	n, err := strconv.Atoi(port)
 	if err != nil || n <= 0 || n > 65535 {
-		return fmt.Errorf("dashboard %q: 端口非法", addr)
+		return fmt.Errorf("%s %q: 端口非法", field, addr)
 	}
 	return nil
 }

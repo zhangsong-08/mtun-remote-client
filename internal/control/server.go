@@ -12,11 +12,15 @@ import (
 	"io"
 	"log/slog"
 	"net"
+	"strings"
 	"sync"
 	"time"
 
 	"github.com/hashicorp/yamux"
 
+	"mtun/internal/access"
+	"mtun/internal/config"
+	"mtun/internal/pending"
 	"mtun/internal/secure"
 	"mtun/internal/state"
 	"mtun/internal/tunnel"
@@ -28,8 +32,11 @@ import (
 type Server struct {
 	addr    string
 	token   string
+	cfgPath string
 	reg     *state.Registry
 	tunnels *tunnel.Manager
+	access  *access.Store
+	pending *pending.Store
 	log     *slog.Logger
 
 	mu    sync.Mutex
@@ -40,6 +47,8 @@ type Server struct {
 type clientConn struct {
 	enc *json.Encoder
 	mu  sync.Mutex
+	os  string
+	ip  string
 }
 
 func (c *clientConn) send(kind string, payload any) error {
@@ -48,15 +57,38 @@ func (c *clientConn) send(kind string, payload any) error {
 	return proto.Send(c.enc, kind, payload)
 }
 
-func NewServer(addr, token string, reg *state.Registry, tunnels *tunnel.Manager, log *slog.Logger) *Server {
-	return &Server{
+func NewServer(addr, token, cfgPath string, reg *state.Registry, tunnels *tunnel.Manager, log *slog.Logger) *Server {
+	s := &Server{
 		addr:    addr,
 		token:   token,
+		cfgPath: cfgPath,
 		reg:     reg,
 		tunnels: tunnels,
 		log:     log,
 		conns:   map[string]*clientConn{},
 	}
+	if cfgPath != "" {
+		accessPath := cfgPath + ".access.json"
+		if st, err := access.Load(accessPath); err != nil {
+			log.Warn("读取访问策略失败，使用空策略", "path", accessPath, "err", err)
+			st, _ = access.Load("")
+			s.access = st
+		} else {
+			s.access = st
+		}
+		pendingPath := cfgPath + ".rules.json"
+		if st, err := pending.Load(pendingPath); err != nil {
+			log.Warn("读取待同步规则失败，使用空队列", "path", pendingPath, "err", err)
+			st, _ = pending.Load("")
+			s.pending = st
+		} else {
+			s.pending = st
+		}
+	} else {
+		s.access, _ = access.Load("")
+		s.pending, _ = pending.Load("")
+	}
+	return s
 }
 
 func (s *Server) Run(ctx context.Context) error {
@@ -153,38 +185,70 @@ func (s *Server) handle(ctx context.Context, conn net.Conn) {
 				s.log.Warn("register without node id", "from", remote)
 				return
 			}
+			host, _, splitErr := net.SplitHostPort(remote)
+			if splitErr != nil {
+				host = remote
+			}
 			if s.tunnels.Banned(msg.NodeID) {
 				s.log.Warn("reject banned node", "node", msg.NodeID, "from", remote)
 				_ = cc.send(proto.TypeError, proto.Error{Message: "节点已被管理员临时封禁，请稍后重连"})
 				return
 			}
+			if err := s.access.Check(msg.NodeID, msg.OS, host, time.Now()); err != nil {
+				s.log.Warn("reject by access policy", "node", msg.NodeID, "from", remote, "err", err)
+				_ = cc.send(proto.TypeError, proto.Error{Message: err.Error()})
+				return
+			}
 			nodeID = msg.NodeID
+			cc.os = msg.OS
+			cc.ip = host
 			path := msg.Path
 			if path == "" {
 				path = "relay"
 			}
+			rules := msg.Publish
+			ops := s.pending.Take(msg.NodeID)
+			if len(ops) > 0 {
+				var applyErrs []error
+				rules, applyErrs = pending.Apply(rules, ops)
+				for _, e := range applyErrs {
+					s.log.Warn("应用待同步规则失败", "node", msg.NodeID, "err", e)
+				}
+			}
 			s.reg.Upsert(state.Update{
 				ID:        msg.NodeID,
+				OS:        msg.OS,
+				ClientIP:  host,
 				Path:      path,
 				Endpoints: []string{remote},
-				Publish:   msg.Publish,
+				Publish:   rules,
 				Now:       time.Now(),
 			})
-			statuses, err := s.tunnels.Register(msg.NodeID, sess, msg.Publish)
+			statuses, err := s.tunnels.Register(msg.NodeID, sess, rules)
 			if err != nil {
 				s.log.Warn("register rejected", "node", msg.NodeID, "from", remote, "err", err)
 				_ = cc.send(proto.TypeError, proto.Error{Message: err.Error()})
 				return
 			}
 			s.addConn(msg.NodeID, cc)
-			s.log.Info("node registered", "node", msg.NodeID, "from", remote, "rules", len(msg.Publish))
+			s.log.Info("node registered", "node", msg.NodeID, "from", remote, "rules", len(rules))
 			if err := s.sendStatus(cc, msg.NodeID, statuses); err != nil {
 				return
+			}
+			if len(ops) > 0 {
+				if err := cc.send(proto.TypeRulesSync, proto.RulesSync{Rules: rules}); err != nil {
+					return
+				}
 			}
 			s.broadcastPeers()
 
 		case proto.TypeHeartbeat:
 			if nodeID == "" {
+				return
+			}
+			if err := s.access.Check(nodeID, cc.os, cc.ip, time.Now()); err != nil {
+				s.log.Warn("heartbeat rejected by access policy", "node", nodeID, "err", err)
+				_ = cc.send(proto.TypeError, proto.Error{Message: err.Error()})
 				return
 			}
 			s.reg.Upsert(state.Update{ID: nodeID, Path: "relay", Now: time.Now()})
@@ -280,4 +344,105 @@ func (s *Server) SetRuleVisibility(nodeID, name, visibility string, visibleTo []
 	s.log.Info("规则可见范围已修改", "node", nodeID, "rule", name, "visibility", visibility, "visible_to", len(visibleTo))
 	s.broadcastPeers()
 	return nil
+}
+
+// ApplyRuleChange 对指定节点增删改一条规则；在线节点立即生效并下发落盘，
+// 离线节点写入待同步队列，下次注册时应用。
+func (s *Server) ApplyRuleChange(nodeID string, op pending.Op) ([]proto.PublishRule, bool, error) {
+	nodeID = strings.TrimSpace(nodeID)
+	if nodeID == "" {
+		return nil, false, errors.New("缺少节点 ID")
+	}
+	n, ok := s.reg.Get(nodeID)
+	if !ok {
+		return nil, false, fmt.Errorf("节点 %s 不存在", nodeID)
+	}
+	online := s.connFor(nodeID) != nil
+	current := n.Publish
+	if online {
+		if specs := s.tunnels.RuleSpecs(nodeID); specs != nil {
+			current = specs
+		}
+	}
+	final, applyErrs := pending.Apply(current, []pending.Op{op})
+	if len(applyErrs) > 0 {
+		return nil, online, applyErrs[0]
+	}
+	for _, rule := range final {
+		if err := config.ValidateRule(rule); err != nil {
+			return nil, online, err
+		}
+	}
+
+	if !online {
+		if err := s.reg.SetPublish(nodeID, final); err != nil {
+			return nil, false, err
+		}
+		if err := s.pending.Add(nodeID, op); err != nil {
+			return nil, false, err
+		}
+		s.log.Info("规则变更已排队等待节点上线", "node", nodeID, "op", op.Op, "rule", op.Rule.Name)
+		s.broadcastPeers()
+		return final, false, nil
+	}
+
+	statuses, err := s.tunnels.ApplyRules(nodeID, final)
+	if err != nil {
+		return nil, true, err
+	}
+	if err := s.reg.SetPublish(nodeID, final); err != nil {
+		return nil, true, err
+	}
+	cc := s.connFor(nodeID)
+	if cc == nil {
+		// 连接刚断开，转为离线排队。
+		if err := s.pending.Add(nodeID, op); err != nil {
+			return nil, false, err
+		}
+		return final, false, nil
+	}
+	if err := cc.send(proto.TypeRulesSync, proto.RulesSync{Rules: final}); err != nil {
+		// 客户端未落盘时重新排队，保证下次注册应用。
+		if qerr := s.pending.Add(nodeID, op); qerr != nil {
+			s.log.Warn("回填待同步规则失败", "node", nodeID, "err", qerr)
+		}
+		return nil, true, fmt.Errorf("下发规则失败: %w", err)
+	}
+	if err := s.sendStatus(cc, nodeID, statuses); err != nil {
+		s.log.Warn("下发规则状态失败", "node", nodeID, "err", err)
+	}
+	s.log.Info("规则已更新并下发", "node", nodeID, "op", op.Op, "rule", op.Rule.Name)
+	s.broadcastPeers()
+	return final, true, nil
+}
+
+// AccessPolicy 返回节点访问策略。
+func (s *Server) AccessPolicy(id string) access.Policy {
+	return s.access.Get(id)
+}
+
+// AccessPolicies 返回全部访问策略。
+func (s *Server) AccessPolicies() map[string]access.Policy {
+	return s.access.List()
+}
+
+// SetAccessPolicy 保存节点访问策略。
+func (s *Server) SetAccessPolicy(id string, p access.Policy) error {
+	if strings.TrimSpace(id) == "" {
+		return errors.New("缺少节点 ID")
+	}
+	return s.access.Set(id, p)
+}
+
+// ClearAccessPolicy 清除节点访问策略。
+func (s *Server) ClearAccessPolicy(id string) error {
+	if strings.TrimSpace(id) == "" {
+		return errors.New("缺少节点 ID")
+	}
+	return s.access.Clear(id)
+}
+
+// PendingCount 返回节点待同步的规则操作数量。
+func (s *Server) PendingCount(id string) int {
+	return s.pending.Count(id)
 }

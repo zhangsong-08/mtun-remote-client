@@ -19,6 +19,7 @@ import (
 	"sync"
 	"time"
 
+	"mtun/internal/access"
 	"mtun/internal/autostart"
 	"mtun/internal/config"
 	"mtun/internal/control"
@@ -48,6 +49,13 @@ type Server struct {
 	httpSrv *http.Server
 	ctx     context.Context
 	mu      sync.Mutex
+
+	// 敏感操作依赖的 PIN 状态与重启钩子（测试可替换）。
+	pinMu       sync.Mutex
+	pinFailures int
+	pinLockedTo time.Time
+	restartFn   func() error
+	exitFn      func()
 }
 
 func New(cfg *config.Config, reg *state.Registry, tunnels *tunnel.Manager, ctl *control.Server, version, cfgPath string, log *slog.Logger) (*Server, error) {
@@ -63,7 +71,7 @@ func New(cfg *config.Config, reg *state.Registry, tunnels *tunnel.Manager, ctl *
 	if err != nil {
 		return nil, fmt.Errorf("%w；请先运行: mtun passwd -c %s", err, cfgPath)
 	}
-	return &Server{
+	srv := &Server{
 		cfg:     cfg,
 		cfgPath: cfgPath,
 		reg:     reg,
@@ -73,7 +81,16 @@ func New(cfg *config.Config, reg *state.Registry, tunnels *tunnel.Manager, ctl *
 		log:     log,
 		auth:    auth,
 		sys:     sysinfo.NewCollector(log),
-	}, nil
+	}
+	srv.restartFn = func() error {
+		exe, err := os.Executable()
+		if err != nil {
+			return err
+		}
+		return selfupdate.ScheduleRestart(exe, log)
+	}
+	srv.exitFn = func() { os.Exit(0) }
+	return srv, nil
 }
 
 func (s *Server) Run(ctx context.Context) error {
@@ -117,10 +134,15 @@ func (s *Server) handler() http.Handler {
 	mux.HandleFunc("/api/status", s.handleStatus)
 	mux.HandleFunc("/api/nodes", s.handleNodes)
 	mux.HandleFunc("/api/nodes/kick", s.handleKick)
+	mux.HandleFunc("/api/nodes/rules", s.handleRuleChange)
+	mux.HandleFunc("/api/nodes/access", s.handleNodeAccess)
+	mux.HandleFunc("/api/nodes/unban", s.handleUnban)
 	mux.HandleFunc("/api/rules/visibility", s.handleRuleVisibility)
 	mux.HandleFunc("/api/system", s.handleSystem)
 	mux.HandleFunc("/api/panel", s.handlePanel)
 	mux.HandleFunc("/api/panel/restart", s.handlePanelRestart)
+	mux.HandleFunc("/api/panel/secure", s.handlePanelSecure)
+	mux.HandleFunc("/api/pin", s.handlePIN)
 	mux.HandleFunc("/api/autostart", s.handleAutostart)
 	mux.HandleFunc("/api/update", s.handleUpdate)
 	mux.HandleFunc("/", s.handleIndex)
@@ -154,10 +176,12 @@ func (s *Server) handlePanel(w http.ResponseWriter, r *http.Request) {
 	case http.MethodGet:
 		webx.WriteJSON(w, map[string]any{
 			"dashboard":       s.cfg.Dashboard,
+			"control":         s.cfg.Control,
 			"session_minutes": s.cfg.Panel.SessionMinutes,
 			"page_size":       s.cfg.Panel.PageSize,
 			"version":         s.version,
 			"config_path":     s.cfgPath,
+			"pin_set":         webx.PINConfigured(s.cfgPath + ".pin"),
 		})
 	case http.MethodPost:
 		var req struct {
@@ -315,11 +339,17 @@ func (s *Server) handleStatus(w http.ResponseWriter, _ *http.Request) {
 type nodeView struct {
 	ID              string             `json:"id"`
 	OverlayIP       string             `json:"overlay_ip"`
+	OS              string             `json:"os,omitempty"`
+	IP              string             `json:"ip,omitempty"`
 	Path            string             `json:"path"`
 	Online          bool               `json:"online"`
 	Endpoints       []string           `json:"endpoints"`
 	Publish         int                `json:"publish"`
 	LastSeenSeconds int64              `json:"last_seen_seconds"`
+	Banned          bool               `json:"banned"`
+	BanUntil        string             `json:"ban_until,omitempty"`
+	QueuedRules     int                `json:"queued_rules"`
+	Access          access.Policy      `json:"access"`
 	Rules           []proto.RuleStatus `json:"rules"`
 }
 
@@ -508,16 +538,34 @@ func (s *Server) handleNodes(w http.ResponseWriter, _ *http.Request) {
 	out := make([]nodeView, 0, len(nodes))
 	now := time.Now()
 	for _, n := range nodes {
-		out = append(out, nodeView{
+		var policy access.Policy
+		if s.ctl != nil {
+			policy = s.ctl.AccessPolicy(n.ID)
+		}
+		view := nodeView{
 			ID:              n.ID,
 			OverlayIP:       n.OverlayIP,
+			OS:              n.OS,
+			IP:              n.ClientIP,
 			Path:            n.Path,
 			Online:          n.Online,
 			Endpoints:       n.Endpoints,
 			Publish:         len(n.Publish),
 			LastSeenSeconds: int64(now.Sub(n.LastSeen).Seconds()),
+			Access:          policy,
 			Rules:           s.nodeRules(n),
-		})
+		}
+		if policy.Permanent {
+			view.Banned = true
+			view.BanUntil = "permanent"
+		} else if !policy.Until.IsZero() && now.Before(policy.Until) {
+			view.Banned = true
+			view.BanUntil = policy.Until.Format(time.RFC3339)
+		}
+		if s.ctl != nil {
+			view.QueuedRules = s.ctl.PendingCount(n.ID)
+		}
+		out = append(out, view)
 	}
 	webx.WriteJSON(w, out)
 }

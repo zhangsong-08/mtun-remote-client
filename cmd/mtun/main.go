@@ -97,6 +97,9 @@ func run(args []string, logger *slog.Logger) error {
 	case "access":
 		return runAccess(args[1:])
 
+	case "pin":
+		return runPIN(args[1:])
+
 	case "rule":
 		return runRule(args[1:])
 
@@ -151,6 +154,8 @@ func usage() {
   mtun passwd -c configs/server.example.yaml   服务端管理密码（管理员在终端设置，启动前必须）
   mtun passwd -c configs/client.example.yaml   客户端登录密码（也可首次打开控制台时设置）
   mtun access -c configs/server.example.yaml   客户端接入密码（客户端连接服务端时填写）
+  mtun pin    -c configs/server.example.yaml -new 123456
+                                               服务端面板敏感操作 PIN（6 位数字）
 
 运行:
   mtun server -c configs/server.example.yaml
@@ -682,6 +687,23 @@ func runPasswd(args []string) error {
 		return err
 	}
 	fmt.Printf("已设置管理密码（用户 %s），文件: %s.passwd\n", *user, *cfgPath)
+	return nil
+}
+
+// runPIN 设置或重置服务端面板敏感操作 PIN（本地终端执行）。
+func runPIN(args []string) error {
+	fs := flag.NewFlagSet("pin", flag.ExitOnError)
+	cfgPath := fs.String("c", "", "服务端配置文件路径，如 configs/server.example.yaml")
+	pin := fs.String("new", "", "新的 6 位数字 PIN")
+	_ = fs.Parse(args)
+
+	if strings.TrimSpace(*cfgPath) == "" {
+		return errors.New("请用 -c 指定服务端配置文件，如 -c configs/server.example.yaml")
+	}
+	if err := webx.SetPINFile(*cfgPath+".pin", strings.TrimSpace(*pin)); err != nil {
+		return err
+	}
+	fmt.Printf("敏感操作 PIN 已保存：%s.pin\n", *cfgPath)
 	return nil
 }
 

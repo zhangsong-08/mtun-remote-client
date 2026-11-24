@@ -13,6 +13,10 @@ const state = {
   ipVisible: false,
   panel: null,
   autostart: null,
+  pinSet: false,
+  ruleTarget: null,
+  ruleEditing: null,
+  accessTarget: null,
 };
 
 const ROUTES = new Set(["overview", "nodes", "rules", "panel", "update"]);
@@ -53,7 +57,12 @@ async function postJSON(url, body) {
   } catch (_) {
     // 忽略非 JSON 响应
   }
-  if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+  if (!res.ok) {
+    const err = new Error(data.error || `HTTP ${res.status}`);
+    err.status = res.status;
+    err.data = data;
+    throw err;
+  }
   return data;
 }
 
@@ -153,6 +162,176 @@ async function changeVisibility(nodeID, rule) {
   }
 }
 
+function setMsg(id, text, ok) {
+  const el = $(id);
+  el.textContent = text || "";
+  el.className = "form-msg" + (ok ? " ok" : "");
+}
+
+function splitLines(value) {
+  return String(value || "")
+    .split(/[\n,，]/)
+    .map((s) => s.trim())
+    .filter(Boolean);
+}
+
+function openRuleDialog(nodeID, rule) {
+  state.ruleTarget = nodeID;
+  state.ruleEditing = rule ? rule.name : null;
+  $("rule-dialog-title").textContent = rule ? "编辑规则" : "新增规则";
+  $("r-node").value = nodeID;
+  $("r-name").value = rule ? rule.name : "";
+  $("r-name").readOnly = !!rule;
+  $("r-proto").value = rule ? (rule.proto || "tcp") : "tcp";
+  $("r-listen").value = rule ? rule.listen : "";
+  $("r-target").value = rule ? rule.target : "";
+  $("r-visibility").value = rule ? (rule.visibility || "all") : "all";
+  $("r-visible-to").value = rule && rule.visible_to ? rule.visible_to.join(",") : "";
+  setMsg("rule-msg", "");
+  $("rule-dialog").showModal();
+}
+
+async function submitRule(event) {
+  event.preventDefault();
+  const rule = {
+    name: $("r-name").value.trim(),
+    proto: $("r-proto").value,
+    listen: Number($("r-listen").value),
+    target: $("r-target").value.trim(),
+    visibility: $("r-visibility").value,
+    visible_to: splitLines($("r-visible-to").value),
+  };
+  try {
+    const data = await postJSON("/api/nodes/rules", {
+      node: state.ruleTarget,
+      op: state.ruleEditing ? "update" : "add",
+      rule,
+    });
+    $("rule-dialog").close();
+    await refresh();
+    if (!data.online) alert("节点当前离线，规则将在其下次上线时自动同步");
+  } catch (err) {
+    setMsg("rule-msg", err.message);
+  }
+}
+
+async function deleteRule(nodeID, name) {
+  if (!confirm(`确定删除规则「${name}」？`)) return;
+  try {
+    const data = await postJSON("/api/nodes/rules", { node: nodeID, op: "delete", rule: { name } });
+    await refresh();
+    if (!data.online) alert("节点当前离线，删除操作将在其下次上线时自动同步");
+  } catch (err) {
+    alert("删除失败：" + err.message);
+  }
+}
+
+function openAccessDialog(node) {
+  state.accessTarget = node.id;
+  const p = node.access || {};
+  $("a-node").value = node.id;
+  $("a-ban").value = 0;
+  $("a-permanent").checked = !!p.permanent;
+  const w = (p.daily || [])[0] || {};
+  $("a-start").value = w.start || "";
+  $("a-end").value = w.end || "";
+  $("a-allow").value = (p.allow_cidrs || []).join("\n");
+  $("a-deny").value = (p.deny_cidrs || []).join("\n");
+  document.querySelectorAll(".a-os").forEach((cb) => {
+    cb.checked = (p.allow_os || []).includes(cb.value);
+  });
+  setMsg("access-msg", "");
+  $("access-dialog").showModal();
+}
+
+async function submitAccess(event) {
+  event.preventDefault();
+  const daily = [];
+  const start = $("a-start").value;
+  const end = $("a-end").value;
+  if (start && end) daily.push({ start, end });
+  const body = {
+    id: state.accessTarget,
+    ban_seconds: Math.round(Number($("a-ban").value || 0) * 60),
+    permanent: $("a-permanent").checked,
+    daily,
+    allow_cidrs: splitLines($("a-allow").value),
+    deny_cidrs: splitLines($("a-deny").value),
+    allow_os: Array.from(document.querySelectorAll(".a-os:checked")).map((cb) => cb.value),
+  };
+  try {
+    await postJSON("/api/nodes/access", body);
+    $("access-dialog").close();
+    await refresh();
+  } catch (err) {
+    setMsg("access-msg", err.message);
+  }
+}
+
+async function unbanNode() {
+  if (!state.accessTarget) return;
+  try {
+    await postJSON("/api/nodes/unban", { id: state.accessTarget });
+    $("access-dialog").close();
+    await refresh();
+  } catch (err) {
+    setMsg("access-msg", err.message);
+  }
+}
+
+async function submitPIN(event) {
+  event.preventDefault();
+  const body = { pin: $("pin-new").value.trim(), confirm: $("pin-confirm").value.trim() };
+  if (state.pinSet) body.current_pin = $("pin-current").value.trim();
+  try {
+    await postJSON("/api/pin", body);
+    $("pin-new").value = "";
+    $("pin-confirm").value = "";
+    $("pin-current").value = "";
+    setMsg("pin-msg", "PIN 已保存", true);
+    await loadPanel();
+  } catch (err) {
+    setMsg("pin-msg", err.message);
+  }
+}
+
+async function submitSecure(event) {
+  event.preventDefault();
+  const body = { pin: $("s-pin").value.trim() };
+  const dash = $("s-dashboard").value.trim();
+  const control = $("s-control").value.trim();
+  const pass = $("s-admin-pass").value;
+  const join = $("s-join-token").value;
+  if (dash) body.dashboard = dash;
+  if (control) body.control = control;
+  if (pass) body.admin_password = pass;
+  if (join) body.join_token = join;
+  if (!dash && !control && !pass && !join) {
+    setMsg("secure-msg", "没有需要修改的项");
+    return;
+  }
+  try {
+    const data = await postJSON("/api/panel/secure", body);
+    $("s-admin-pass").value = "";
+    $("s-join-token").value = "";
+    $("s-pin").value = "";
+    if (data.restarting) {
+      setMsg("secure-msg", "已保存，服务端正在重启，约 5 秒后自动刷新...", true);
+      setTimeout(() => location.reload(), 6000);
+      return;
+    }
+    setMsg("secure-msg", data.relogin ? "已保存，请重新登录" : "已保存", true);
+    if (data.relogin) setTimeout(() => (location.href = "/login"), 1500);
+    await loadPanel();
+  } catch (err) {
+    if (err.data && err.data.need_setup) {
+      setMsg("secure-msg", "请先在安全设置中设置 PIN");
+      return;
+    }
+    setMsg("secure-msg", err.message);
+  }
+}
+
 function emptyRow(tbody, cols, text) {
   const tr = document.createElement("tr");
   const td = document.createElement("td");
@@ -207,14 +386,19 @@ function renderStatus(s) {
 function renderPanelInfo(p) {
   state.panel = p;
   if (p.page_size > 0) state.pageSize = p.page_size;
+  state.pinSet = !!p.pin_set;
   $("ov-panel-addr").textContent = p.dashboard || "-";
   $("ov-session").textContent = `${p.session_minutes} 分钟`;
   $("ov-pagesize").textContent = `${p.page_size} 条`;
-  $("p-dashboard").value = p.dashboard || "";
+  $("s-dashboard").value = p.dashboard || "";
+  $("s-control").value = p.control || "";
   $("p-session").value = p.session_minutes;
   $("p-pagesize").value = p.page_size;
   $("panel-path").textContent = p.config_path || "";
   $("panel-config").textContent = p.config_path || "-";
+  $("pin-status").textContent = state.pinSet ? "已设置 PIN" : "尚未设置 PIN";
+  $("pin-current-label").hidden = !state.pinSet;
+  $("btn-pin-save").textContent = state.pinSet ? "修改 PIN" : "设置 PIN";
   const addr = (p.dashboard || "").toLowerCase();
   const local = !addr || addr.startsWith("127.") || addr.startsWith("localhost") || addr.startsWith("[::1]") || addr.startsWith("::1");
   $("panel-scope").textContent = local ? "仅本机（回环地址）" : "可从外部网络访问";
@@ -235,10 +419,34 @@ function nodeDetail(node) {
   const info = document.createElement("div");
   info.className = "muted";
   const endpoints = (node.endpoints || []).join(", ") || "-";
-  info.textContent =
-    `覆盖 IP ${node.overlay_ip} · 路径 ${node.path === "direct" ? "直连" : "中继"} · ` +
-    `最后心跳 ${fmtDuration(node.last_seen_seconds)} · 端点 ${endpoints}`;
+  const parts = [
+    `覆盖 IP ${node.overlay_ip}`,
+    `系统 ${node.os || "未上报"}`,
+    `来源 IP ${node.ip || "-"}`,
+    `路径 ${node.path === "direct" ? "直连" : "中继"}`,
+    `最后心跳 ${fmtDuration(node.last_seen_seconds)}`,
+    `端点 ${endpoints}`,
+  ];
+  if (node.queued_rules) parts.push(`待同步 ${node.queued_rules} 条规则`);
+  if (node.banned) parts.push(node.ban_until === "permanent" ? "已永久封禁" : `封禁至 ${node.ban_until}`);
+  info.textContent = parts.join(" · ");
   box.appendChild(info);
+
+  const toolbar = document.createElement("div");
+  toolbar.className = "detail-toolbar";
+  const addBtn = document.createElement("button");
+  addBtn.type = "button";
+  addBtn.className = "btn-link";
+  addBtn.textContent = "新增规则";
+  addBtn.addEventListener("click", () => openRuleDialog(node.id, null));
+  const accessBtn = document.createElement("button");
+  accessBtn.type = "button";
+  accessBtn.className = "btn-link";
+  accessBtn.textContent = "访问策略";
+  accessBtn.addEventListener("click", () => openAccessDialog(node));
+  toolbar.appendChild(addBtn);
+  toolbar.appendChild(accessBtn);
+  box.appendChild(toolbar);
 
   const rules = node.rules || [];
   if (!rules.length) {
@@ -252,7 +460,7 @@ function nodeDetail(node) {
   const table = document.createElement("table");
   const thead = document.createElement("thead");
   const headRow = document.createElement("tr");
-  for (const title of ["规则", "协议", "公网端口", "内网目标", "可见范围", "状态"]) {
+  for (const title of ["规则", "协议", "公网端口", "内网目标", "可见范围", "状态", "操作"]) {
     const th = document.createElement("th");
     th.textContent = title;
     headRow.appendChild(th);
@@ -277,6 +485,21 @@ function nodeDetail(node) {
       statusTd.appendChild(msg);
     }
     tr.appendChild(statusTd);
+
+    const opTd = document.createElement("td");
+    const editBtn = document.createElement("button");
+    editBtn.type = "button";
+    editBtn.className = "btn-link";
+    editBtn.textContent = "编辑";
+    editBtn.addEventListener("click", () => openRuleDialog(node.id, rule));
+    const delBtn = document.createElement("button");
+    delBtn.type = "button";
+    delBtn.className = "btn-link";
+    delBtn.textContent = "删除";
+    delBtn.addEventListener("click", () => deleteRule(node.id, rule.name));
+    opTd.appendChild(editBtn);
+    opTd.appendChild(delBtn);
+    tr.appendChild(opTd);
     tbody.appendChild(tr);
   }
   table.appendChild(tbody);
@@ -308,6 +531,7 @@ function renderNodes() {
     const name = document.createElement("td");
     name.appendChild(document.createTextNode(node.id + " "));
     name.appendChild(badge(online ? "在线" : "离线", online ? "ok" : "offline"));
+    if (node.banned) name.appendChild(badge("已封禁", "err"));
 
     const toggle = document.createElement("button");
     toggle.type = "button";
@@ -391,12 +615,24 @@ function renderRules() {
     tr.appendChild(statusTd);
 
     const opTd = document.createElement("td");
-    const btn = document.createElement("button");
-    btn.type = "button";
-    btn.className = "btn-link";
-    btn.textContent = "修改可见";
-    btn.addEventListener("click", () => changeVisibility(node.id, rule));
-    opTd.appendChild(btn);
+    const editBtn = document.createElement("button");
+    editBtn.type = "button";
+    editBtn.className = "btn-link";
+    editBtn.textContent = "编辑";
+    editBtn.addEventListener("click", () => openRuleDialog(node.id, rule));
+    const visBtn = document.createElement("button");
+    visBtn.type = "button";
+    visBtn.className = "btn-link";
+    visBtn.textContent = "修改可见";
+    visBtn.addEventListener("click", () => changeVisibility(node.id, rule));
+    const delBtn = document.createElement("button");
+    delBtn.type = "button";
+    delBtn.className = "btn-link";
+    delBtn.textContent = "删除";
+    delBtn.addEventListener("click", () => deleteRule(node.id, rule.name));
+    opTd.appendChild(editBtn);
+    opTd.appendChild(visBtn);
+    opTd.appendChild(delBtn);
     tr.appendChild(opTd);
     tbody.appendChild(tr);
   }
@@ -485,14 +721,12 @@ $("panel-form").addEventListener("submit", async (event) => {
   event.preventDefault();
   setPanelMsg("");
   try {
-    const data = await postJSON("/api/panel", {
-      dashboard: $("p-dashboard").value.trim(),
+    await postJSON("/api/panel", {
       session_minutes: Number($("p-session").value),
       page_size: Number($("p-pagesize").value),
     });
     state.pageSize = Number($("p-pagesize").value);
-    const p = data.restart_required ? "已保存。监听地址与会话时长需重启面板后生效。" : "已保存。";
-    setPanelMsg(p, true);
+    setPanelMsg("已保存。", true);
     await loadPanel();
     renderRules();
   } catch (err) {
@@ -618,6 +852,14 @@ $("btn-check").addEventListener("click", loadUpdate);
 $("btn-update").addEventListener("click", applyUpdate);
 $("btn-restart").addEventListener("click", restartPanel);
 $("btn-autostart").addEventListener("click", toggleAutostart);
+$("pin-form").addEventListener("submit", submitPIN);
+$("secure-form").addEventListener("submit", submitSecure);
+$("rule-form").addEventListener("submit", submitRule);
+$("access-form").addEventListener("submit", submitAccess);
+$("a-unban").addEventListener("click", unbanNode);
+document.querySelectorAll("dialog [data-close]").forEach((btn) => {
+  btn.addEventListener("click", () => btn.closest("dialog").close());
+});
 $("btn-toggle-ip").addEventListener("click", () => {
   state.ipVisible = !state.ipVisible;
   $("btn-toggle-ip").textContent = state.ipVisible ? "隐藏" : "显示";

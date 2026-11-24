@@ -106,7 +106,7 @@ func (a *Agent) Run(ctx context.Context) error {
 
 		runCtx, cancel := context.WithCancel(ctx)
 		client := control.NewClient(server, token, a.cfg.Node, a.version, rules,
-			a.applyStatus, a.applyPeers, a.applyAcl, a.log)
+			a.applyStatus, a.applyPeers, a.applyAcl, a.applyRules, a.log)
 		done := make(chan error, 1)
 		go func() { done <- client.Run(runCtx) }()
 
@@ -209,6 +209,21 @@ func (a *Agent) applyAcl(u proto.AclUpdate) {
 		a.log.Info("服务端已修改规则可见范围", "rule", u.Name, "visibility", visibility)
 		return
 	}
+}
+
+// applyRules 接收服务端增删改后的规则列表并落盘，不触发重连。
+func (a *Agent) applyRules(u proto.RulesSync) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+
+	prev := a.cfg.Publish.Rules
+	a.cfg.Publish.Rules = append([]proto.PublishRule(nil), u.Rules...)
+	if err := config.Save(a.cfgPath, a.cfg); err != nil {
+		a.cfg.Publish.Rules = prev
+		a.log.Warn("保存服务端下发的规则失败", "err", err)
+		return
+	}
+	a.log.Info("服务端已更新转发规则", "rules", len(u.Rules))
 }
 
 func (a *Agent) setDown(msg string) {
