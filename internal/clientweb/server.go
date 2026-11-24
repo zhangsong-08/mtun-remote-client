@@ -96,7 +96,7 @@ func (s *Server) handler() http.Handler {
 	return s.auth.Wrap(mux)
 }
 
-// handleAutostart 查询或切换 Windows 开机自启动，不改变当前进程状态。
+// handleAutostart 查询或切换开机自启动，不改变当前进程状态。
 func (s *Server) handleAutostart(w http.ResponseWriter, r *http.Request) {
 	m, err := autostart.New("client", s.cfgPath)
 	if err != nil {
