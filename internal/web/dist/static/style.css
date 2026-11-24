@@ -166,38 +166,149 @@ input:focus, select:focus, textarea:focus { border-color: var(--brand); }
 .search { min-width: 260px; }
 
 button { font: inherit; cursor: pointer; }
-.btn, button.primary {
-  background: var(--brand);
-  color: #fff;
-  border: 0;
-  border-radius: 8px;
-  padding: 9px 15px;
+
+/* === 通用按钮系统 === */
+.btn, button.primary, button.secondary, button.danger, button.ghost {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: 9px 18px;
   font-size: 13px;
+  font-weight: 500;
+  line-height: 1;
+  border-radius: 8px;
+  border: 1px solid transparent;
+  transition: transform 0.12s ease, box-shadow 0.18s ease, background 0.18s ease, border-color 0.18s ease, color 0.18s ease, filter 0.18s ease;
+  white-space: nowrap;
+  user-select: none;
+  outline: none;
+  letter-spacing: 0.2px;
 }
-.btn:hover, button.primary:hover { background: var(--brand-2); }
+.btn:active, button:active { transform: translateY(1px) scale(0.985); }
+
+/* Focus 光环 */
+.btn:focus-visible, button:focus-visible {
+  box-shadow: 0 0 0 2px var(--surface), 0 0 0 4px var(--brand);
+}
+
+/* Primary — 渐变主按钮 + 柔和发光 */
+.btn, button.primary {
+  background: linear-gradient(135deg, var(--brand) 0%, #9a7cff 100%);
+  color: #fff;
+  border-color: transparent;
+  box-shadow: 0 2px 8px rgba(124, 92, 255, 0.25), 0 1px 2px rgba(0, 0, 0, 0.3);
+}
+.btn:hover, button.primary:hover {
+  background: linear-gradient(135deg, #8b6aff 0%, #a88bff 100%);
+  box-shadow: 0 4px 14px rgba(124, 92, 255, 0.4), 0 2px 4px rgba(0, 0, 0, 0.3);
+  filter: brightness(1.05);
+}
+.btn:active, button.primary:active {
+  box-shadow: 0 1px 4px rgba(124, 92, 255, 0.3);
+  filter: brightness(0.97);
+}
+
+/* Secondary — 玻璃态次按钮 */
 .btn.secondary, button.secondary {
-  background: var(--surface-2);
+  background: linear-gradient(180deg, rgba(255,255,255,0.04) 0%, rgba(255,255,255,0.015) 100%);
   color: var(--text);
-  border: 1px solid var(--border);
+  border-color: var(--border);
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.2);
 }
-.btn:disabled, button:disabled { opacity: 0.45; cursor: not-allowed; }
+.btn.secondary:hover, button.secondary:hover {
+  background: linear-gradient(180deg, rgba(255,255,255,0.07) 0%, rgba(255,255,255,0.03) 100%);
+  border-color: #3a3a4a;
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.25);
+  transform: translateY(-1px);
+}
+.btn.secondary:active, button.secondary:active {
+  transform: translateY(0);
+  background: rgba(0,0,0,0.15);
+}
+
+/* Danger — 危险操作 */
+.btn.danger, button.danger {
+  background: linear-gradient(135deg, var(--danger) 0%, #ff7a92 100%);
+  color: #fff;
+  border-color: transparent;
+  box-shadow: 0 2px 8px rgba(255, 92, 122, 0.25), 0 1px 2px rgba(0, 0, 0, 0.3);
+}
+.btn.danger:hover, button.danger:hover {
+  background: linear-gradient(135deg, #ff7a92 0%, #ff98a8 100%);
+  box-shadow: 0 4px 14px rgba(255, 92, 122, 0.4);
+  filter: brightness(1.05);
+}
+
+/* Ghost — 幽灵按钮，无边框 */
+.btn.ghost, button.ghost {
+  background: transparent;
+  color: var(--text);
+  border-color: transparent;
+}
+.btn.ghost:hover, button.ghost:hover {
+  background: rgba(255,255,255,0.06);
+  transform: translateY(-1px);
+}
+
+/* 通用禁用态 */
+.btn:disabled, button:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+  pointer-events: none;
+  box-shadow: none !important;
+  transform: none !important;
+  filter: grayscale(0.5);
+}
+
+/* Loading 旋转指示器 */
+.btn.is-loading::after {
+  content: '';
+  width: 12px;
+  height: 12px;
+  margin-left: 4px;
+  border: 2px solid currentColor;
+  border-right-color: transparent;
+  border-radius: 50%;
+  animation: btn-spin 0.6s linear infinite;
+}
+@keyframes btn-spin { to { transform: rotate(360deg); } }
+
+/* 链接按钮 */
 .btn-link {
   background: none;
   border: 0;
   color: var(--brand);
-  padding: 0;
-  margin-left: 8px;
+  padding: 2px 4px;
   font-size: 12px;
+  font-weight: 500;
+  border-radius: 4px;
+  transition: background 0.15s ease, color 0.15s ease;
 }
-.btn-link:hover { text-decoration: underline; }
+.btn-link:hover {
+  background: rgba(124, 92, 255, 0.12);
+  color: #9a7cff;
+}
+
 .link-danger {
   background: none;
   border: 0;
   color: var(--danger);
-  padding: 0;
+  padding: 2px 4px;
   font-size: 12px;
+  font-weight: 500;
+  border-radius: 4px;
+  transition: background 0.15s ease, color 0.15s ease;
 }
-.link-danger:hover { text-decoration: underline; }
+.link-danger:hover {
+  background: rgba(255, 92, 122, 0.12);
+  color: #ff7a92;
+}
+
+/* Small 变体（pagination 等紧凑场景） */
+.btn.sm, button.sm { padding: 6px 12px; font-size: 12px; border-radius: 6px; }
+.btn.lg, button.lg { padding: 11px 22px; font-size: 14px; border-radius: 10px; }
 
 .table-wrap { overflow-x: auto; }
 table { width: 100%; border-collapse: collapse; font-size: 13px; }
