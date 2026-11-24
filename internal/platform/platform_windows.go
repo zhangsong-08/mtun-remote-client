@@ -56,6 +56,12 @@ func DataDir() string {
 	return ConfigDir()
 }
 
+// IsSystemdManaged 在 Windows 上恒为 false。
+func IsSystemdManaged() bool { return false }
+
+// ServiceUnit 在 Windows 上返回空字符串。
+func ServiceUnit() string { return "" }
+
 func ServiceHint() string {
 	return fmt.Sprintf(`Windows 自动启动:
   推荐使用安装脚本（管理员 PowerShell）:

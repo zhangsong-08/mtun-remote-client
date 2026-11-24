@@ -361,10 +361,28 @@ func CleanupOld() {
 	_ = os.Remove(exe + ".old")
 }
 
-// ScheduleRestart 启动一个等待旧进程退出的助手进程，由它拉起新版本。
-// 助手必须脱离当前进程的控制台与作业对象（Job），否则主进程退出时
-// 会被系统连带清理，导致新版本永远不会被拉起。
+// ScheduleRestart 安排旧进程退出后拉起新版本。
+//
+// 在 Linux + systemd 环境下，主进程退出时 systemd 会按 KillMode=control-group
+// 清理同 cgroup 里的所有进程（包括 __restart 助手），导致新版本永远起不来。
+// 因此这条路径优先走 systemctl restart：通过 systemd-run 创建独立 scope
+// （脱离当前 service cgroup），让 systemctl restart 在后台异步执行，
+// 当前进程随后正常 exit，systemd 会自动 stop→start（用已替换的新二进制）。
+//
+// Windows 与 Linux 非 systemd 环境仍使用 __restart 助手进程。
 func ScheduleRestart(exe string, log *slog.Logger) error {
+	// Linux + systemd：让 systemd 自己管理 stop→start 生命周期。
+	if platform.IsSystemdManaged() {
+		unit := platform.ServiceUnit()
+		if err := scheduleSystemdRestart(unit); err != nil {
+			log.Warn("systemd restart 失败，回退到助手进程", "unit", unit, "err", err)
+		} else {
+			log.Info("已安排 systemd 重启", "unit", unit)
+			return nil
+		}
+	}
+
+	// ---- Windows / Linux 非 systemd 助手路径 ----
 	raw, err := json.Marshal(os.Args[1:])
 	if err != nil {
 		return fmt.Errorf("序列化启动参数失败: %w", err)
@@ -393,6 +411,20 @@ func ScheduleRestart(exe string, log *slog.Logger) error {
 	}
 	log.Info("已安排自动重启", "exe", exe)
 	return nil
+}
+
+// scheduleSystemdRestart 通过 systemd-run 创建独立 scope 异步执行
+// "systemctl restart <unit>"。scope 脱离当前 service 的 cgroup，
+// 不会被 systemctl stop 时的 KillMode=control-group 清理掉。
+func scheduleSystemdRestart(unit string) error {
+	cmd := exec.Command("systemd-run",
+		"--scope",     // 创建独立 scope unit（脱离 mtun.service cgroup）
+		"--no-block",  // 立即返回，不阻塞当前进程
+		"systemctl", "restart", unit,
+	)
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	return cmd.Start()
 }
 
 // RunRestartHelper 是 __restart 的实现：等待旧进程退出后拉起新进程，

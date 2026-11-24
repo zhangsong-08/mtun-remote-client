@@ -8,6 +8,7 @@ package platform
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"syscall"
 )
 
@@ -34,6 +35,17 @@ func ProcessAlive(pid int) bool {
 func DataDir() string {
 	home, _ := os.UserHomeDir()
 	return filepath.Join(home, ".local", "share", "mtun")
+}
+
+// IsSystemdManaged 在非 Linux 上恒为 false。
+func IsSystemdManaged() bool { return false }
+
+// ServiceUnit 在非 Linux 上返回空字符串。
+func ServiceUnit() string {
+	if v := strings.TrimSpace(os.Getenv("MTUN_SYSTEMD_UNIT")); v != "" {
+		return v
+	}
+	return ""
 }
 
 func ServiceHint() string {
