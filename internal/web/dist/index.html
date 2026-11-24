@@ -16,6 +16,7 @@
         <a href="#/overview" data-page="overview">系统状态</a>
         <a href="#/nodes" data-page="nodes">节点</a>
         <a href="#/rules" data-page="rules">转发规则</a>
+        <a href="#/crypto" data-page="crypto">加密</a>
         <a href="#/panel" data-page="panel">面板管理</a>
         <a href="#/update" data-page="update">版本更新</a>
       </nav>
@@ -146,9 +147,6 @@
           <div class="toolbar">
             <input id="node-search" class="search" placeholder="搜索节点、覆盖 IP 或端点">
             <span class="spacer"></span>
-            <label class="inline" title="关闭后，未设置独立密码的节点将无法接入">
-              <input type="checkbox" id="allow-default-password"> 允许默认密码接入
-            </label>
             <span class="muted" id="node-count"></span>
           </div>
           <div class="table-wrap">
@@ -200,6 +198,92 @@
               <tbody id="rule-rows"></tbody>
             </table>
           </div>
+        </div>
+      </section>
+
+      <section class="page" id="page-crypto" hidden>
+        <div class="page-head">
+          <h1>加密</h1>
+          <span class="muted">接入密码只保存本地哈希，明文仅在生成时显示一次</span>
+        </div>
+        <div class="note">本页所有修改都需要 PIN。为节点设置独立密码后，该节点必须使用自己的密码接入；未设置独立密码的节点才使用默认接入密码。</div>
+
+        <div class="panel">
+          <div class="panel-head">
+            <h2>操作 PIN</h2>
+            <span class="muted" id="crypto-pin-hint">用于本页的密码修改与开关操作</span>
+          </div>
+          <div class="toolbar">
+            <input id="crypto-pin" type="password" inputmode="numeric" maxlength="6" autocomplete="off" placeholder="6 位 PIN">
+            <span class="spacer"></span>
+            <span class="muted">连续输错 5 次将临时锁定</span>
+          </div>
+        </div>
+
+        <div class="panel">
+          <div class="panel-head">
+            <h2>默认接入密码</h2>
+            <span class="muted" id="crypto-default-state">读取中...</span>
+          </div>
+          <div class="update-row">
+            <span class="muted">关闭后，未设置独立密码的节点将无法接入；已设置独立密码的节点不受影响</span>
+            <span class="spacer"></span>
+            <label class="inline">
+              <input type="checkbox" id="allow-default-password"> 允许默认密码接入
+            </label>
+          </div>
+          <div class="form-msg" id="crypto-default-msg"></div>
+        </div>
+
+        <div class="panel">
+          <div class="panel-head">
+            <h2>节点接入密码</h2>
+            <span class="muted" id="crypto-node-count"></span>
+          </div>
+          <div class="toolbar">
+            <input id="crypto-search" class="search" placeholder="搜索节点或覆盖 IP">
+          </div>
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>节点</th>
+                  <th>覆盖 IP</th>
+                  <th>接入密码</th>
+                  <th>更新时间</th>
+                  <th>操作</th>
+                </tr>
+              </thead>
+              <tbody id="crypto-rows"></tbody>
+            </table>
+          </div>
+        </div>
+
+        <div class="panel">
+          <div class="panel-head">
+            <h2>设置接入密码</h2>
+            <span class="muted" id="crypto-target-label">请选择节点</span>
+          </div>
+          <form id="crypto-form" class="form-grid">
+            <label>节点
+              <select id="c-node"></select>
+            </label>
+            <label>新密码（留空则随机生成，至少 8 位）
+              <input id="c-password" autocomplete="off" spellcheck="false" placeholder="留空则随机生成">
+            </label>
+            <div class="dialog-actions">
+              <button type="submit" class="btn" id="c-save">保存密码</button>
+              <button type="button" class="secondary" id="c-clear">清除该节点密码</button>
+            </div>
+            <div class="crypto-result" id="crypto-result" hidden>
+              <span class="muted">新密码（仅显示这一次，请立即复制）</span>
+              <div class="crypto-value">
+                <input id="c-result-value" readonly class="mono">
+                <button type="button" class="secondary sm" id="c-copy">复制</button>
+              </div>
+            </div>
+            <div class="form-msg" id="crypto-msg"></div>
+          </form>
         </div>
       </section>
 
@@ -383,29 +467,6 @@
             <button type="button" class="secondary" data-close>取消</button>
           </div>
           <div class="form-msg" id="access-msg"></div>
-        </form>
-      </dialog>
-
-      <dialog id="password-dialog">
-        <form id="password-form" class="form-grid">
-          <h2>节点接入密码</h2>
-          <label>节点
-            <input id="p-node" readonly>
-          </label>
-          <div class="muted" id="p-status">未设置独立密码，使用默认密码接入</div>
-          <label>接入密码
-            <input id="p-value" autocomplete="off" spellcheck="false" placeholder="留空可点“随机生成”，密码只保存哈希">
-          </label>
-          <label>PIN
-            <input id="p-pin" type="password" inputmode="numeric" maxlength="6" placeholder="6 位 PIN">
-          </label>
-          <div class="dialog-actions">
-            <button type="button" class="secondary" id="p-random">随机生成</button>
-            <button type="submit" class="btn">保存</button>
-            <button type="button" class="secondary" id="p-clear">清除</button>
-            <button type="button" class="secondary" data-close>取消</button>
-          </div>
-          <div class="form-msg" id="password-msg"></div>
         </form>
       </dialog>
 

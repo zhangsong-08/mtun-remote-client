@@ -17,10 +17,12 @@ const state = {
   ruleTarget: null,
   ruleEditing: null,
   accessTarget: null,
-  passwordTarget: null,
+  cryptoNode: "",
+  cryptoQuery: "",
+  cryptoNodeSig: "",
 };
 
-const ROUTES = new Set(["overview", "nodes", "rules", "panel", "update"]);
+const ROUTES = new Set(["overview", "nodes", "rules", "crypto", "panel", "update"]);
 
 async function getJSON(url) {
   const res = await fetch(url, { credentials: "same-origin" });
@@ -280,85 +282,189 @@ async function unbanNode() {
   }
 }
 
-// ==== 节点独立接入密码 ====
+// ==== 加密：节点独立接入密码 ====
 
-function openPasswordDialog(node) {
-  state.passwordTarget = node.id;
-  $("p-node").value = node.id;
-  $("p-value").value = "";
-  $("p-pin").value = "";
-  $("p-status").textContent = node.has_password
-    ? "该节点已设置独立接入密码（出于安全考虑不显示，仅保存哈希）"
-    : "该节点未设置独立密码，当前使用默认密码接入";
-  setMsg("password-msg", "");
-  $("password-dialog").showModal();
+function fmtTime(iso) {
+  if (!iso) return "-";
+  const d = new Date(iso);
+  return isNaN(d.getTime()) ? "-" : d.toLocaleString();
 }
 
-function applyPasswordResult(data) {
-  if (data.set && data.password) {
-    $("p-value").value = data.password;
-    $("p-status").textContent = "已设置独立接入密码，请立即复制下方密码交给该节点用户（关闭后无法再次查看）";
-  } else if (data.set) {
-    $("p-value").value = "";
-    $("p-status").textContent = "已设置独立接入密码（出于安全考虑，密码不再显示）";
-  } else {
-    $("p-value").value = "";
-    $("p-status").textContent = "该节点未设置独立密码，当前使用默认密码接入";
+function cryptoPIN() {
+  const pin = $("crypto-pin").value.trim();
+  if (!pin) {
+    setMsg("crypto-msg", "请先在上方「操作 PIN」中填写 6 位 PIN");
+    $("crypto-pin").focus();
+    return "";
+  }
+  return pin;
+}
+
+function showCryptoResult(password) {
+  $("c-result-value").value = password;
+  $("crypto-result").hidden = false;
+}
+
+function hideCryptoResult() {
+  $("c-result-value").value = "";
+  $("crypto-result").hidden = true;
+}
+
+async function copyCryptoResult() {
+  const value = $("c-result-value").value;
+  if (!value) return;
+  try {
+    await navigator.clipboard.writeText(value);
+    setMsg("crypto-msg", "已复制到剪贴板", true);
+  } catch (_) {
+    $("c-result-value").select();
+    setMsg("crypto-msg", "浏览器未授予剪贴板权限，请手动复制");
   }
 }
 
-async function nodePasswordAction(action, password) {
-  if (!state.passwordTarget) return null;
-  const pin = $("p-pin").value.trim();
-  if (!pin) {
-    setMsg("password-msg", "请输入 6 位 PIN");
+function cryptoNode() {
+  return state.nodes.find((n) => n.id === state.cryptoNode) || null;
+}
+
+function updateCryptoTarget() {
+  const node = cryptoNode();
+  $("crypto-target-label").textContent = !node
+    ? "暂无可用节点"
+    : `${node.id} · ${node.has_password ? "已设置独立密码" : "当前使用默认密码"}`;
+  $("c-save").disabled = !node;
+  $("c-clear").disabled = !node || !node.has_password;
+}
+
+function renderCryptoSelect() {
+  const sel = $("c-node");
+  const sig = state.nodes.map((n) => n.id).join("|");
+  if (sig !== state.cryptoNodeSig) {
+    sel.replaceChildren();
+    for (const node of state.nodes) {
+      const opt = document.createElement("option");
+      opt.value = node.id;
+      opt.textContent = `${node.id}（${node.overlay_ip}）`;
+      sel.appendChild(opt);
+    }
+    if (!state.nodes.length) {
+      const opt = document.createElement("option");
+      opt.value = "";
+      opt.textContent = "暂无节点";
+      sel.appendChild(opt);
+    }
+    state.cryptoNodeSig = sig;
+  }
+  if (state.cryptoNode && state.nodes.some((n) => n.id === state.cryptoNode)) {
+    sel.value = state.cryptoNode;
+  } else {
+    state.cryptoNode = sel.value || "";
+  }
+  updateCryptoTarget();
+}
+
+function selectCryptoNode(nodeID) {
+  state.cryptoNode = nodeID;
+  state.cryptoNodeSig = "";
+  renderCryptoSelect();
+}
+
+function renderCryptoNodes() {
+  const tbody = $("crypto-rows");
+  tbody.replaceChildren();
+  const q = state.cryptoQuery.trim().toLowerCase();
+  const list = state.nodes.filter((n) => {
+    if (!q) return true;
+    return [n.id, n.overlay_ip].join(" ").toLowerCase().includes(q);
+  });
+  $("crypto-node-count").textContent = `${list.length} / ${state.nodes.length} 个节点`;
+
+  if (!list.length) {
+    emptyRow(tbody, 5, state.nodes.length ? "没有匹配的节点" : "还没有节点注册");
+    return;
+  }
+
+  for (const node of list) {
+    const tr = document.createElement("tr");
+    const name = document.createElement("td");
+    name.appendChild(document.createTextNode(node.id + " "));
+    name.appendChild(badge(node.online !== false ? "在线" : "离线", node.online !== false ? "ok" : "offline"));
+    tr.appendChild(name);
+    tr.appendChild(cell(node.overlay_ip, true));
+
+    const passTd = document.createElement("td");
+    passTd.appendChild(node.has_password ? badge("独立密码", "ok") : badge("默认密码", "warn"));
+    tr.appendChild(passTd);
+
+    tr.appendChild(cell(node.has_password ? fmtTime(node.password_updated_at) : "-"));
+
+    const opTd = document.createElement("td");
+    const pick = document.createElement("button");
+    pick.type = "button";
+    pick.className = "btn-link";
+    pick.textContent = "选择";
+    pick.addEventListener("click", () => selectCryptoNode(node.id));
+    opTd.appendChild(pick);
+    tr.appendChild(opTd);
+    tbody.appendChild(tr);
+  }
+}
+
+async function cryptoNodeAction(action, password) {
+  const pin = cryptoPIN();
+  if (!pin) return null;
+  if (!state.cryptoNode) {
+    setMsg("crypto-msg", "请先选择节点");
     return null;
   }
-  const body = { pin, node: state.passwordTarget, action };
+  const body = { pin, node: state.cryptoNode, action };
   if (password !== undefined) body.password = password;
   try {
     return await postJSON("/api/nodes/password", body);
   } catch (err) {
-    setMsg("password-msg", err.message);
+    setMsg("crypto-msg", err.message);
     return null;
   }
 }
 
-async function randomNodePassword() {
-  const data = await nodePasswordAction("random");
-  if (!data) return;
-  applyPasswordResult(data);
-  setMsg("password-msg", "已生成新密码，请立即复制；关闭窗口后无法再次查看", true);
-  await refresh();
-}
-
-async function clearNodePassword() {
-  if (!confirm("确定清除该节点的独立接入密码？清除后将回落到默认密码策略。")) return;
-  const data = await nodePasswordAction("clear");
-  if (!data) return;
-  applyPasswordResult(data);
-  setMsg("password-msg", "已清除独立密码", true);
-  await refresh();
-}
-
-async function submitPassword(event) {
+async function submitCryptoPassword(event) {
   event.preventDefault();
-  const password = $("p-value").value.trim();
-  if (!password) {
-    setMsg("password-msg", "请输入密码，或点“随机生成”");
-    return;
-  }
-  const data = await nodePasswordAction("set", password);
+  const password = $("c-password").value.trim();
+  const data = await cryptoNodeAction(password ? "set" : "random", password || undefined);
   if (!data) return;
-  applyPasswordResult(data);
-  setMsg("password-msg", "已保存，节点下次连接时生效", true);
+  $("c-password").value = "";
+  if (data.password) {
+    showCryptoResult(data.password);
+    setMsg("crypto-msg", "已生成随机密码，请立即复制；离开本页后无法再次查看", true);
+  } else {
+    hideCryptoResult();
+    setMsg("crypto-msg", "已保存，节点下次连接时生效", true);
+  }
   await refresh();
+}
+
+async function clearCryptoPassword() {
+  const node = cryptoNode();
+  if (!node) return;
+  if (!confirm(`确定清除节点「${node.id}」的独立接入密码？清除后将回落到默认密码策略。`)) return;
+  const data = await cryptoNodeAction("clear");
+  if (!data) return;
+  hideCryptoResult();
+  setMsg("crypto-msg", "已清除该节点的独立接入密码", true);
+  await refresh();
+}
+
+function renderCryptoDefaultState() {
+  const on = $("allow-default-password").checked;
+  $("crypto-default-state").textContent = on
+    ? "允许未设置独立密码的节点接入"
+    : "仅允许已设置独立密码的节点接入";
 }
 
 async function loadDefaultPassword() {
   try {
     const data = await getJSON("/api/nodes/password/default");
     $("allow-default-password").checked = !!data.allow_default;
+    renderCryptoDefaultState();
   } catch (_) {
     /* 忽略：下次刷新重试 */
   }
@@ -366,22 +472,26 @@ async function loadDefaultPassword() {
 
 async function toggleDefaultPassword(event) {
   const allow = event.target.checked;
-  const input = prompt(
-    allow
-      ? "开启后，未设置独立密码的节点可用默认密码接入。\n请输入 6 位 PIN："
-      : "关闭后，未设置独立密码的节点将无法接入。\n请输入 6 位 PIN："
-  );
-  if (input === null) {
+  const pin = $("crypto-pin").value.trim();
+  if (!pin) {
     event.target.checked = !allow;
+    setMsg("crypto-default-msg", "请先在上方「操作 PIN」中填写 6 位 PIN");
+    $("crypto-pin").focus();
     return;
   }
   try {
-    await postJSON("/api/nodes/password/default", { pin: input.trim(), allow });
-    await refresh();
+    const data = await postJSON("/api/nodes/password/default", { pin, allow });
+    $("allow-default-password").checked = !!data.allow_default;
+    setMsg(
+      "crypto-default-msg",
+      data.allow_default ? "已开启默认密码接入" : "已关闭默认密码接入，未设独立密码的节点将无法接入",
+      true
+    );
   } catch (err) {
     event.target.checked = !allow;
-    alert("切换失败：" + err.message);
+    setMsg("crypto-default-msg", err.message);
   }
+  renderCryptoDefaultState();
 }
 
 async function submitPIN(event) {
@@ -554,7 +664,10 @@ function nodeDetail(node) {
   passBtn.type = "button";
   passBtn.className = "btn-link";
   passBtn.textContent = "接入密码";
-  passBtn.addEventListener("click", () => openPasswordDialog(node));
+  passBtn.addEventListener("click", () => {
+    location.hash = "#/crypto";
+    selectCryptoNode(node.id);
+  });
   toolbar.appendChild(addBtn);
   toolbar.appendChild(accessBtn);
   toolbar.appendChild(passBtn);
@@ -915,6 +1028,11 @@ function navigate() {
     a.classList.toggle("active", a.dataset.page === page);
   });
   if (page === "update") loadUpdate();
+  if (page === "crypto") {
+    renderCryptoNodes();
+    renderCryptoSelect();
+    loadDefaultPassword();
+  }
   if (page === "panel") {
     loadPanel();
     loadAutostart();
@@ -933,7 +1051,8 @@ async function refresh() {
     state.nodes = nodes.value || [];
     renderNodes();
     renderRules();
-    loadDefaultPassword();
+    renderCryptoNodes();
+    renderCryptoSelect();
   }
   if (sys.status === "fulfilled") renderSystem(sys.value);
 
@@ -972,9 +1091,18 @@ $("secure-form").addEventListener("submit", submitSecure);
 $("rule-form").addEventListener("submit", submitRule);
 $("access-form").addEventListener("submit", submitAccess);
 $("a-unban").addEventListener("click", unbanNode);
-$("password-form").addEventListener("submit", submitPassword);
-$("p-random").addEventListener("click", randomNodePassword);
-$("p-clear").addEventListener("click", clearNodePassword);
+$("crypto-form").addEventListener("submit", submitCryptoPassword);
+$("c-clear").addEventListener("click", clearCryptoPassword);
+$("c-copy").addEventListener("click", copyCryptoResult);
+$("c-node").addEventListener("change", (e) => {
+  state.cryptoNode = e.target.value;
+  hideCryptoResult();
+  updateCryptoTarget();
+});
+$("crypto-search").addEventListener("input", (e) => {
+  state.cryptoQuery = e.target.value;
+  renderCryptoNodes();
+});
 $("allow-default-password").addEventListener("change", toggleDefaultPassword);
 document.querySelectorAll("dialog [data-close]").forEach((btn) => {
   btn.addEventListener("click", () => btn.closest("dialog").close());
