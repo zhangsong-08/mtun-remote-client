@@ -743,10 +743,12 @@ function renderAutostart() {
     scheduled_task: "计划任务", task: "计划任务",
     nssm: "NSSM 系统服务", service: "Windows 服务",
     startup_folder: "启动文件夹", startup: "启动文件夹", startup_link: "旧版启动项",
+    systemd: "systemd 服务",
   }[s.mode] || "";
   const trigger = {
     startup: "开机后，无需登录", boot: "开机后，无需登录", at_startup: "开机后，无需登录", atstartup: "开机后，无需登录",
     logon: "当前用户登录后", at_logon: "当前用户登录后", atlogon: "当前用户登录后",
+    at_system_startup: "系统启动后",
   }[String(s.trigger || "").toLowerCase()] || "";
   $("autostart-status").textContent = !s.supported ? "当前系统不可用" : (s.conflict ? "配置冲突" : (s.enabled ? "已启用" : "未启用"));
   const detail = s.enabled ? [mode, trigger, s.message] : [s.message];
