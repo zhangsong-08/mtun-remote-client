@@ -167,36 +167,65 @@ func (a *Auth) Close() {
 
 // SetPasswordFile 写入管理密码哈希，供终端命令在服务未运行时设置密码。
 func SetPasswordFile(path, user, password string) error {
-	if user == "" {
-		user = "admin"
-	}
-	if err := validateUser(user); err != nil {
-		return err
-	}
-	if err := validatePassword(password); err != nil {
-		return err
-	}
-
-	salt := make([]byte, 16)
-	if _, err := rand.Read(salt); err != nil {
-		return err
-	}
-	key, err := pbkdf2.Key(sha256.New, password, salt, pbkdf2Iterations, 32)
+	rec, err := newPasswordRecord(user, password)
 	if err != nil {
 		return err
-	}
-	rec := passwordFile{
-		User: user,
-		Algo: passwordAlgo,
-		Iter: pbkdf2Iterations,
-		Salt: base64.StdEncoding.EncodeToString(salt),
-		Hash: base64.StdEncoding.EncodeToString(key),
 	}
 	data, err := json.MarshalIndent(rec, "", "  ")
 	if err != nil {
 		return err
 	}
 	return writeFileAtomic(path, data, 0o600)
+}
+
+func newPasswordRecord(user, password string) (passwordFile, error) {
+	if user == "" {
+		user = "admin"
+	}
+	if err := validateUser(user); err != nil {
+		return passwordFile{}, err
+	}
+	if err := validatePassword(password); err != nil {
+		return passwordFile{}, err
+	}
+
+	salt := make([]byte, 16)
+	if _, err := rand.Read(salt); err != nil {
+		return passwordFile{}, err
+	}
+	key, err := pbkdf2.Key(sha256.New, password, salt, pbkdf2Iterations, 32)
+	if err != nil {
+		return passwordFile{}, err
+	}
+	return passwordFile{
+		User: user,
+		Algo: passwordAlgo,
+		Iter: pbkdf2Iterations,
+		Salt: base64.StdEncoding.EncodeToString(salt),
+		Hash: base64.StdEncoding.EncodeToString(key),
+	}, nil
+}
+
+// SetCredentials 立即更新内存中的管理密码并使所有已登录会话失效。
+func (a *Auth) SetCredentials(user, password string) error {
+	rec, err := newPasswordRecord(user, password)
+	if err != nil {
+		return err
+	}
+	a.mu.Lock()
+	a.creds = &rec
+	a.sessions = map[string]session{}
+	a.failures = 0
+	a.lockedTo = time.Time{}
+	a.mu.Unlock()
+	return nil
+}
+
+// InvalidateSessions 使所有已登录会话失效。
+func (a *Auth) InvalidateSessions() {
+	a.mu.Lock()
+	a.sessions = map[string]session{}
+	a.mu.Unlock()
 }
 
 func (a *Auth) configured() bool {
@@ -522,6 +551,11 @@ func setupError(code string) string {
 	}
 }
 
+// ValidatePassword 供调用方在落盘前校验管理密码长度。
+func ValidatePassword(password string) error {
+	return validatePassword(password)
+}
+
 func validatePassword(password string) error {
 	if len(password) < minPasswordLength {
 		return fmt.Errorf("密码至少需要 %d 位", minPasswordLength)
@@ -599,6 +633,13 @@ func writeFileAtomic(path string, data []byte, perm os.FileMode) error {
 
 func WriteJSON(w http.ResponseWriter, v any) {
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	_ = json.NewEncoder(w).Encode(v)
+}
+
+// WriteJSONStatus 以指定状态码返回 JSON。
+func WriteJSONStatus(w http.ResponseWriter, code int, v any) {
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	w.WriteHeader(code)
 	_ = json.NewEncoder(w).Encode(v)
 }
 

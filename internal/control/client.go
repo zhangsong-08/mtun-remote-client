@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net"
+	"runtime"
 	"time"
 
 	"github.com/hashicorp/yamux"
@@ -30,11 +31,13 @@ type Client struct {
 	onStatus func(proto.Status)
 	onPeers  func(proto.Peers)
 	onAcl    func(proto.AclUpdate)
+	onRules  func(proto.RulesSync)
 	log      *slog.Logger
 }
 
 func NewClient(server, token, nodeID, version string, rules []proto.PublishRule,
-	onStatus func(proto.Status), onPeers func(proto.Peers), onAcl func(proto.AclUpdate), log *slog.Logger) *Client {
+	onStatus func(proto.Status), onPeers func(proto.Peers), onAcl func(proto.AclUpdate),
+	onRules func(proto.RulesSync), log *slog.Logger) *Client {
 	return &Client{
 		server:   server,
 		token:    token,
@@ -44,6 +47,7 @@ func NewClient(server, token, nodeID, version string, rules []proto.PublishRule,
 		onStatus: onStatus,
 		onPeers:  onPeers,
 		onAcl:    onAcl,
+		onRules:  onRules,
 		log:      log,
 	}
 }
@@ -87,6 +91,7 @@ func (c *Client) Run(ctx context.Context) error {
 	if err := proto.Send(enc, proto.TypeRegister, proto.Register{
 		NodeID:  c.nodeID,
 		Version: c.version,
+		OS:      runtime.GOOS,
 		Path:    "relay",
 		Publish: publish,
 	}); err != nil {
@@ -152,6 +157,15 @@ func (c *Client) readStatus(dec *json.Decoder, rejected chan<- string) {
 				}
 				if c.onAcl != nil {
 					c.onAcl(u)
+				}
+			case proto.TypeRulesSync:
+				var u proto.RulesSync
+				if err := json.Unmarshal(env.Payload, &u); err != nil {
+					c.log.Warn("bad rules payload", "err", err)
+					continue
+				}
+				if c.onRules != nil {
+					c.onRules(u)
 				}
 			}
 			continue

@@ -20,6 +20,8 @@ type Node struct {
 	ID        string
 	OverlayIP string
 	PublicKey string
+	OS        string
+	ClientIP  string
 	Path      string
 	Endpoints []string
 	Publish   []proto.PublishRule
@@ -30,6 +32,8 @@ type Node struct {
 type Update struct {
 	ID        string
 	PublicKey string
+	OS        string
+	ClientIP  string
 	Path      string
 	Endpoints []string
 	Publish   []proto.PublishRule
@@ -88,6 +92,12 @@ func (r *Registry) Upsert(in Update) {
 	if in.PublicKey != "" {
 		n.PublicKey = in.PublicKey
 	}
+	if in.OS != "" {
+		n.OS = in.OS
+	}
+	if in.ClientIP != "" {
+		n.ClientIP = in.ClientIP
+	}
 	if in.Path != "" {
 		n.Path = in.Path
 	} else if n.Path == "" {
@@ -133,6 +143,19 @@ func (r *Registry) List() []Node {
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].ID < out[j].ID })
 	return out
+}
+
+// SetPublish 覆盖节点当前的转发规则（服务端增删改后使用）。
+func (r *Registry) SetPublish(id string, rules []proto.PublishRule) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	n, ok := r.nodes[id]
+	if !ok {
+		return fmt.Errorf("节点 %s 不存在", id)
+	}
+	n.Publish = append([]proto.PublishRule(nil), rules...)
+	return nil
 }
 
 // SetRuleVisibility 更新某节点某条规则的可见范围（服务端管理员操作）。

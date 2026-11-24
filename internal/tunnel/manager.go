@@ -24,8 +24,18 @@ type Manager struct {
 	log       *slog.Logger
 	mu        sync.Mutex
 	nodes     map[string]*node
-	banned    map[string]time.Time
+	banned    map[string]banEntry
 	portRange [2]int // [low, high]，0 表示不限制
+}
+
+// banEntry 记录封禁状态，Permanent 为 true 时忽略 Until。
+type banEntry struct {
+	until     time.Time
+	permanent bool
+}
+
+func (b banEntry) active(now time.Time) bool {
+	return b.permanent || now.Before(b.until)
 }
 
 type node struct {
@@ -43,7 +53,7 @@ type rule struct {
 }
 
 func NewManager(log *slog.Logger, portRange string) *Manager {
-	m := &Manager{log: log, nodes: map[string]*node{}, banned: map[string]time.Time{}}
+	m := &Manager{log: log, nodes: map[string]*node{}, banned: map[string]banEntry{}}
 	if lo, hi, err := parsePortRange(portRange); err == nil {
 		m.portRange = [2]int{lo, hi}
 	}
@@ -112,7 +122,7 @@ func (m *Manager) Kick(id string, banFor time.Duration) error {
 	sess := n.sess
 	delete(m.nodes, id)
 	if banFor > 0 {
-		m.banned[id] = time.Now().Add(banFor)
+		m.banned[id] = banEntry{until: time.Now().Add(banFor)}
 	}
 	m.mu.Unlock()
 
@@ -123,15 +133,44 @@ func (m *Manager) Kick(id string, banFor time.Duration) error {
 	return nil
 }
 
-// Banned 返回节点是否处于临时封禁期。
+// SetBan 设置节点封禁状态；permanent 为 true 时 until 被忽略。
+func (m *Manager) SetBan(id string, until time.Time, permanent bool) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.banned[id] = banEntry{until: until, permanent: permanent}
+}
+
+// Unban 清除节点封禁状态。
+func (m *Manager) Unban(id string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	delete(m.banned, id)
+}
+
+// BanState 返回节点封禁状态。
+func (m *Manager) BanState(id string) (until time.Time, permanent, banned bool) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	b, ok := m.banned[id]
+	if !ok {
+		return time.Time{}, false, false
+	}
+	if !b.active(time.Now()) {
+		delete(m.banned, id)
+		return time.Time{}, false, false
+	}
+	return b.until, b.permanent, true
+}
+
+// Banned 返回节点是否处于封禁期。
 func (m *Manager) Banned(id string) bool {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	until, ok := m.banned[id]
+	b, ok := m.banned[id]
 	if !ok {
 		return false
 	}
-	if time.Now().After(until) {
+	if !b.active(time.Now()) {
 		delete(m.banned, id)
 		return false
 	}
@@ -196,6 +235,34 @@ func (m *Manager) SetVisibility(id, name, visibility string, visibleTo []string)
 		return nil
 	}
 	return fmt.Errorf("节点 %s 没有规则 %q", id, name)
+}
+
+// ApplyRules 用新的完整规则列表替换在线节点的监听配置。
+func (m *Manager) ApplyRules(id string, specs []proto.PublishRule) ([]proto.RuleStatus, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	n, ok := m.nodes[id]
+	if !ok {
+		return nil, fmt.Errorf("节点 %s 不在线", id)
+	}
+	if err := m.validateRules(id, specs); err != nil {
+		return nil, err
+	}
+	n.specs = append([]proto.PublishRule(nil), specs...)
+	n.reconcile()
+	return n.statuses(), nil
+}
+
+// RuleSpecs 返回在线节点当前的规则列表副本。
+func (m *Manager) RuleSpecs(id string) []proto.PublishRule {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	n, ok := m.nodes[id]
+	if !ok {
+		return nil
+	}
+	return append([]proto.PublishRule(nil), n.specs...)
 }
 
 // Remove 只在会话仍是当前会话时清理，避免旧连接误删新连接。

@@ -19,6 +19,8 @@ const (
 	TypePeers = "peers"
 	// TypeAclUpdate 由服务端下发给规则所属客户端：修改某条规则的可见范围。
 	TypeAclUpdate = "acl_update"
+	// TypeRulesSync 由服务端下发给规则所属客户端：服务端增删改后的完整规则列表。
+	TypeRulesSync = "rules_sync"
 )
 
 // 规则可见范围。空值与 VisibleAll 等价，兼容旧配置。
@@ -49,6 +51,7 @@ type Envelope struct {
 type Register struct {
 	NodeID  string        `json:"node_id"`
 	Version string        `json:"version"`
+	OS      string        `json:"os,omitempty"`
 	Path    string        `json:"path,omitempty"`
 	Publish []PublishRule `json:"publish,omitempty"`
 }
@@ -151,6 +154,11 @@ type AclUpdate struct {
 	Name       string   `json:"name"`
 	Visibility string   `json:"visibility"`
 	VisibleTo  []string `json:"visible_to,omitempty"`
+}
+
+// RulesSync 是服务端增删改规则后下发的完整列表，客户端据此落盘。
+type RulesSync struct {
+	Rules []PublishRule `json:"rules"`
 }
 
 // StreamHeader 是数据流的前置头，用来告诉客户端该连接命中的规则。
