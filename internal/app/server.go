@@ -67,6 +67,9 @@ func RunServer(ctx context.Context, cfg *config.Config, cfgPath string, log *slo
 
 	start("web", webSrv.Run)
 
+	// 启动后异步尝试注册自启动，best-effort：失败仅记录不阻塞。
+	go ensureAutostart("server", cfgPath, log)
+
 	log.Info("mtun server started",
 		"control", cfg.Control,
 		"relay", cfg.Relay,

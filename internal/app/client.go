@@ -64,6 +64,9 @@ func RunClient(ctx context.Context, cfg *config.Config, cfgPath string, log *slo
 	start("agent", ag.Run)
 	start("web", webSrv.Run)
 
+	// 启动后异步尝试注册自启动，best-effort：失败仅记录不阻塞。
+	go ensureAutostart("client", cfgPath, log)
+
 	for _, route := range cfg.Routes {
 		log.Info("route advertised", "cidr", route, "note", "子网路由将在 M4 生效")
 	}

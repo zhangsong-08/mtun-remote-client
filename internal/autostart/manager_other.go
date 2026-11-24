@@ -1,7 +1,7 @@
 // Copyright (c) 2026 song08
 // SPDX-License-Identifier: MIT
 
-//go:build !windows
+//go:build !windows && !linux
 
 package autostart
 

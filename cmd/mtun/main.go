@@ -664,7 +664,16 @@ func runUpdate(args []string, logger *slog.Logger) error {
 	if err != nil {
 		return err
 	}
-	fmt.Printf("已更新到 %s：%s\n配置文件与规则均未变动；重启服务后生效\n", rel.Version, exe)
+	fmt.Printf("已更新到 %s：%s\n", rel.Version, exe)
+
+	// 命令行更新后也自动重启，让新版本立即生效（复用面板更新的同一机制）。
+	if err := selfupdate.ScheduleRestart(exe, logger); err != nil {
+		fmt.Fprintf(os.Stderr, "自动重启安排失败：%v（请手动重启服务）\n", err)
+		return nil
+	}
+	fmt.Println("已安排自动重启，新版本将自动启动...")
+	time.Sleep(time.Second)
+	os.Exit(0)
 	return nil
 }
 

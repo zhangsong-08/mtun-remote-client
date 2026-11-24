@@ -5,7 +5,13 @@
 
 package platform
 
-import "syscall"
+import (
+	"os"
+	"os/exec"
+	"strconv"
+	"strings"
+	"syscall"
+)
 
 // DetachProcAttr 在 Linux 下通过独立会话脱离父进程；
 // 忽略 breakaway 参数（该概念仅 Windows 作业对象需要）。
@@ -25,6 +31,92 @@ func ProcessAlive(pid int) bool {
 func ConfigDir() string { return "/etc/mtun" }
 
 func DataDir() string { return "/var/lib/mtun" }
+
+// IsSystemdManaged 判断当前进程是否由 systemd 管理。
+// systemd 会在进程启动时注入非空的 INVOCATION_ID 环境变量，
+// 这是最可靠的信号（不依赖 /proc/cgroup 的具体格式）。
+func IsSystemdManaged() bool {
+	id := strings.TrimSpace(os.Getenv("INVOCATION_ID"))
+	return id != ""
+}
+
+// ServiceUnit 返回当前进程对应的 systemd unit 名（不带 .service 后缀）。
+// 探测优先级：
+//  1. MTUN_SYSTEMD_UNIT 环境变量（显式指定，用户自定义 unit 名时可用）
+//  2. systemctl show --property=Unit --value $PPID / $PID（自动探测最可靠）
+//  3. 读取 /proc/<pid>/cgroup 回退解析
+//  4. 最后回退到默认值 "mtun"
+//
+// 用户完全不用配置环境变量——只要进程由 systemd 启动，就能自动识别。
+func ServiceUnit() string {
+	// 显式环境变量优先（向后兼容）。
+	if v := strings.TrimSpace(os.Getenv("MTUN_SYSTEMD_UNIT")); v != "" {
+		return v
+	}
+
+	// 方式 1：systemctl show 直接查 unit。
+	if unit := detectUnitViaSystemctl(); unit != "" {
+		return unit
+	}
+
+	// 方式 2：解析 /proc/self/cgroup，回退探测。
+	if unit := detectUnitViaCgroup(); unit != "" {
+		return unit
+	}
+
+	return "mtun"
+}
+
+// detectUnitViaSystemctl 用 "systemctl show --property=Unit --value <pid>" 获取当前进程所属 unit。
+func detectUnitViaSystemctl() string {
+	pid := os.Getpid()
+	cmd := exec.Command("systemctl", "show", "--property=Unit", "--value", strconv.Itoa(pid))
+	out, err := cmd.Output()
+	if err != nil {
+		return ""
+	}
+	unit := strings.TrimSpace(string(out))
+	if unit == "" || unit == "not-found" || strings.HasPrefix(unit, "@") {
+		return ""
+	}
+	return unitName(unit)
+}
+
+// detectUnitViaCgroup 解析 /proc/self/cgroup 里的 systemd cgroup。
+func detectUnitViaCgroup() string {
+	data, err := os.ReadFile("/proc/self/cgroup")
+	if err != nil {
+		return ""
+	}
+	for _, line := range strings.Split(string(data), "\n") {
+		// v2: 0::/system.slice/mtun.service/...
+		// v1: 1:name=systemd:/system.slice/mtun.service/...
+		fields := strings.SplitN(line, ":", 3)
+		if len(fields) < 3 {
+			continue
+		}
+		path := fields[2]
+		if idx := strings.Index(path, ".service"); idx >= 0 {
+			// 取 .service 之前的部分
+			start := strings.LastIndex(path[:idx], "/")
+			if start < 0 {
+				start = -1
+			}
+			raw := path[start+1 : idx]
+			if raw != "" && !strings.HasPrefix(raw, "@") {
+				return raw
+			}
+		}
+	}
+	return ""
+}
+
+// unitName 去掉 unit 的 .service 后缀，保持一致。
+func unitName(unit string) string {
+	unit = strings.TrimSpace(unit)
+	unit = strings.TrimSuffix(unit, ".service")
+	return unit
+}
 
 func ServiceHint() string {
 	return `Linux systemd:
@@ -48,5 +140,10 @@ RestartSec=3
 WantedBy=multi-user.target
 
   sudo systemctl daemon-reload
-  sudo systemctl enable --now mtun`
+  sudo systemctl enable --now mtun
+
+说明:
+  - Restart=always 保证进程异常退出后自动拉起
+  - 在线更新时自动调用 systemctl restart，用已替换的新二进制
+  - 进程启动与重启时自动检测当前 systemd unit（零配置）`
 }
