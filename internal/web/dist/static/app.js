@@ -17,6 +17,7 @@ const state = {
   ruleTarget: null,
   ruleEditing: null,
   accessTarget: null,
+  passwordTarget: null,
 };
 
 const ROUTES = new Set(["overview", "nodes", "rules", "panel", "update"]);
@@ -279,6 +280,110 @@ async function unbanNode() {
   }
 }
 
+// ==== 节点独立接入密码 ====
+
+function openPasswordDialog(node) {
+  state.passwordTarget = node.id;
+  $("p-node").value = node.id;
+  $("p-value").value = "";
+  $("p-pin").value = "";
+  $("p-status").textContent = node.has_password
+    ? "该节点已设置独立接入密码（出于安全考虑不显示，仅保存哈希）"
+    : "该节点未设置独立密码，当前使用默认密码接入";
+  setMsg("password-msg", "");
+  $("password-dialog").showModal();
+}
+
+function applyPasswordResult(data) {
+  if (data.set && data.password) {
+    $("p-value").value = data.password;
+    $("p-status").textContent = "已设置独立接入密码，请立即复制下方密码交给该节点用户（关闭后无法再次查看）";
+  } else if (data.set) {
+    $("p-value").value = "";
+    $("p-status").textContent = "已设置独立接入密码（出于安全考虑，密码不再显示）";
+  } else {
+    $("p-value").value = "";
+    $("p-status").textContent = "该节点未设置独立密码，当前使用默认密码接入";
+  }
+}
+
+async function nodePasswordAction(action, password) {
+  if (!state.passwordTarget) return null;
+  const pin = $("p-pin").value.trim();
+  if (!pin) {
+    setMsg("password-msg", "请输入 6 位 PIN");
+    return null;
+  }
+  const body = { pin, node: state.passwordTarget, action };
+  if (password !== undefined) body.password = password;
+  try {
+    return await postJSON("/api/nodes/password", body);
+  } catch (err) {
+    setMsg("password-msg", err.message);
+    return null;
+  }
+}
+
+async function randomNodePassword() {
+  const data = await nodePasswordAction("random");
+  if (!data) return;
+  applyPasswordResult(data);
+  setMsg("password-msg", "已生成新密码，请立即复制；关闭窗口后无法再次查看", true);
+  await refresh();
+}
+
+async function clearNodePassword() {
+  if (!confirm("确定清除该节点的独立接入密码？清除后将回落到默认密码策略。")) return;
+  const data = await nodePasswordAction("clear");
+  if (!data) return;
+  applyPasswordResult(data);
+  setMsg("password-msg", "已清除独立密码", true);
+  await refresh();
+}
+
+async function submitPassword(event) {
+  event.preventDefault();
+  const password = $("p-value").value.trim();
+  if (!password) {
+    setMsg("password-msg", "请输入密码，或点“随机生成”");
+    return;
+  }
+  const data = await nodePasswordAction("set", password);
+  if (!data) return;
+  applyPasswordResult(data);
+  setMsg("password-msg", "已保存，节点下次连接时生效", true);
+  await refresh();
+}
+
+async function loadDefaultPassword() {
+  try {
+    const data = await getJSON("/api/nodes/password/default");
+    $("allow-default-password").checked = !!data.allow_default;
+  } catch (_) {
+    /* 忽略：下次刷新重试 */
+  }
+}
+
+async function toggleDefaultPassword(event) {
+  const allow = event.target.checked;
+  const input = prompt(
+    allow
+      ? "开启后，未设置独立密码的节点可用默认密码接入。\n请输入 6 位 PIN："
+      : "关闭后，未设置独立密码的节点将无法接入。\n请输入 6 位 PIN："
+  );
+  if (input === null) {
+    event.target.checked = !allow;
+    return;
+  }
+  try {
+    await postJSON("/api/nodes/password/default", { pin: input.trim(), allow });
+    await refresh();
+  } catch (err) {
+    event.target.checked = !allow;
+    alert("切换失败：" + err.message);
+  }
+}
+
 async function submitPIN(event) {
   event.preventDefault();
   const body = { pin: $("pin-new").value.trim(), confirm: $("pin-confirm").value.trim() };
@@ -429,6 +534,7 @@ function nodeDetail(node) {
   ];
   if (node.queued_rules) parts.push(`待同步 ${node.queued_rules} 条规则`);
   if (node.banned) parts.push(node.ban_until === "permanent" ? "已永久封禁" : `封禁至 ${node.ban_until}`);
+  parts.push(node.has_password ? "独立接入密码已设置" : "使用默认接入密码");
   info.textContent = parts.join(" · ");
   box.appendChild(info);
 
@@ -444,8 +550,14 @@ function nodeDetail(node) {
   accessBtn.className = "btn-link";
   accessBtn.textContent = "访问策略";
   accessBtn.addEventListener("click", () => openAccessDialog(node));
+  const passBtn = document.createElement("button");
+  passBtn.type = "button";
+  passBtn.className = "btn-link";
+  passBtn.textContent = "接入密码";
+  passBtn.addEventListener("click", () => openPasswordDialog(node));
   toolbar.appendChild(addBtn);
   toolbar.appendChild(accessBtn);
+  toolbar.appendChild(passBtn);
   box.appendChild(toolbar);
 
   const rules = node.rules || [];
@@ -821,6 +933,7 @@ async function refresh() {
     state.nodes = nodes.value || [];
     renderNodes();
     renderRules();
+    loadDefaultPassword();
   }
   if (sys.status === "fulfilled") renderSystem(sys.value);
 
@@ -859,6 +972,10 @@ $("secure-form").addEventListener("submit", submitSecure);
 $("rule-form").addEventListener("submit", submitRule);
 $("access-form").addEventListener("submit", submitAccess);
 $("a-unban").addEventListener("click", unbanNode);
+$("password-form").addEventListener("submit", submitPassword);
+$("p-random").addEventListener("click", randomNodePassword);
+$("p-clear").addEventListener("click", clearNodePassword);
+$("allow-default-password").addEventListener("change", toggleDefaultPassword);
 document.querySelectorAll("dialog [data-close]").forEach((btn) => {
   btn.addEventListener("click", () => btn.closest("dialog").close());
 });

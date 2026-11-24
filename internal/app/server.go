@@ -20,17 +20,17 @@ import (
 )
 
 func RunServer(ctx context.Context, cfg *config.Config, cfgPath string, log *slog.Logger) error {
-	joinPass, err := config.LoadJoinPassword(cfgPath)
+	joinSeed, err := config.LoadJoinSecret(cfgPath)
 	if err != nil {
 		return err
 	}
-	if err := config.ValidateJoinPassword(joinPass); err != nil {
-		return fmt.Errorf("服务端未设置客户端接入密码（%v）；请先运行: mtun access -c %s", err, cfgPath)
+	if joinSeed == "" {
+		return fmt.Errorf("服务端未设置客户端接入密码；请先运行: mtun access -c %s", cfgPath)
 	}
 
 	reg := state.New(cfg.Overlay.ServerIP, cfg.Overlay.CIDR)
 	tunnels := tunnel.NewManager(log, cfg.Publish.PortRange)
-	ctl := control.NewServer(cfg.Control, joinPass, cfgPath, reg, tunnels, log)
+	ctl := control.NewServer(cfg.Control, joinSeed, cfgPath, reg, tunnels, log)
 	webSrv, err := web.New(cfg, reg, tunnels, ctl, version.Version, cfgPath, log)
 	if err != nil {
 		return err

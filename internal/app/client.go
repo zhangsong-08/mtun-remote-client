@@ -18,11 +18,11 @@ import (
 
 // RunClient 启动客户端：连接监管、本地控制台以及数据面占位模块。
 func RunClient(ctx context.Context, cfg *config.Config, cfgPath string, log *slog.Logger) error {
-	joinPass, err := config.LoadJoinPassword(cfgPath)
+	joinSeed, err := config.LoadJoinSecret(cfgPath)
 	if err != nil {
 		return err
 	}
-	if joinPass == "" {
+	if joinSeed == "" {
 		log.Warn("尚未配置接入密码，请在客户端控制台添加服务端与接入密码")
 	}
 
@@ -56,7 +56,7 @@ func RunClient(ctx context.Context, cfg *config.Config, cfgPath string, log *slo
 	path := punch.NewManager(log)
 	start("path", path.Run)
 
-	ag := agent.New(cfg, cfgPath, joinPass, version.Version, log)
+	ag := agent.New(cfg, cfgPath, joinSeed, version.Version, log)
 	webSrv, err := clientweb.New(cfg.Dashboard, ag, cfgPath, log)
 	if err != nil {
 		return err

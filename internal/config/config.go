@@ -14,6 +14,7 @@ import (
 
 	"gopkg.in/yaml.v3"
 
+	"mtun/internal/secret"
 	"mtun/internal/version"
 	"mtun/pkg/proto"
 )
@@ -178,28 +179,63 @@ func Save(path string, cfg *Config) error {
 	return nil
 }
 
-// LoadJoinPassword 读取客户端接入密码（与服务端共享）：
+// LoadJoinSecret 读取接入密码的本地哈希（seed）：
 // 环境变量 MTUN_JOIN_TOKEN 优先，其次读取配置文件旁的 <config>.join。
-func LoadJoinPassword(cfgPath string) (string, error) {
+//
+// 兼容旧版明文文件：读到明文时先校验、转换成 seed 并原子写回，
+// 之后磁盘上不再出现明文密码。
+func LoadJoinSecret(cfgPath string) (string, error) {
 	if v := cleanPassword(os.Getenv("MTUN_JOIN_TOKEN")); v != "" {
-		return v, nil
+		if secret.IsSeed(v) {
+			return v, nil
+		}
+		if err := ValidateJoinPassword(v); err != nil {
+			return "", err
+		}
+		return secret.Seed(v), nil
 	}
-	data, err := os.ReadFile(JoinPasswordPath(cfgPath))
+	path := JoinPasswordPath(cfgPath)
+	data, err := os.ReadFile(path)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
 			return "", nil
 		}
 		return "", fmt.Errorf("读取接入密码: %w", err)
 	}
-	return cleanPassword(string(data)), nil
+	raw := cleanPassword(string(data))
+	if raw == "" {
+		return "", nil
+	}
+	if secret.IsSeed(raw) {
+		return raw, nil
+	}
+	if err := ValidateJoinPassword(raw); err != nil {
+		return "", err
+	}
+	seed := secret.Seed(raw)
+	// 迁移失败不阻塞启动，下次启动会再次尝试。
+	_ = writeJoinSecret(path, seed)
+	return seed, nil
 }
 
-// SaveJoinPassword 保存接入密码到 <config>.join（0600），不写进 YAML。
+// SaveJoinPassword 校验明文密码后，仅把其本地哈希写入 <config>.join（0600）。
 func SaveJoinPassword(cfgPath, password string) error {
 	if err := ValidateJoinPassword(password); err != nil {
 		return err
 	}
-	if err := os.WriteFile(JoinPasswordPath(cfgPath), []byte(password+"\n"), 0o600); err != nil {
+	return writeJoinSecret(JoinPasswordPath(cfgPath), secret.Seed(password))
+}
+
+// SaveJoinSecret 直接保存已经计算好的 seed（例如随机生成密码后只保留哈希）。
+func SaveJoinSecret(cfgPath, seed string) error {
+	if !secret.IsSeed(seed) {
+		return fmt.Errorf("接入密码哈希格式无效")
+	}
+	return writeJoinSecret(JoinPasswordPath(cfgPath), seed)
+}
+
+func writeJoinSecret(path, seed string) error {
+	if err := os.WriteFile(path, []byte(seed+"\n"), 0o600); err != nil {
 		return fmt.Errorf("保存接入密码: %w", err)
 	}
 	return nil
