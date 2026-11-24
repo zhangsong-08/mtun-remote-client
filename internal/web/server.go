@@ -426,7 +426,7 @@ func (s *Server) handleRuleVisibility(w http.ResponseWriter, r *http.Request) {
 	webx.WriteJSON(w, map[string]any{"ok": true, "visibility": visibility, "visible_to": visibleTo})
 }
 
-// handleAutostart 查询或切换 Windows 开机自启动，不改变当前进程状态。
+// handleAutostart 查询或切换开机自启动，不改变当前进程状态。
 func (s *Server) handleAutostart(w http.ResponseWriter, r *http.Request) {
 	m, err := autostart.New(string(config.RoleServer), s.cfgPath)
 	if err != nil {
