@@ -1,4 +1,4 @@
-# Copyright (c) 2026 song08
+﻿# Copyright (c) 2026 song08
 # SPDX-License-Identifier: MIT
 #
 # 按角色把当前 main 拆分成「服务端仓」与「客户端仓」两份快照并推送。
