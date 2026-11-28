@@ -35,6 +35,7 @@ NODE_NAME=""
 PANEL_ADDR="${MTUN_PANEL:-127.0.0.1:10005}"
 ADMIN_PASSWORD="${MTUN_ADMIN_PASSWORD:-}"
 UNINSTALL=false
+ASSUME_YES=false
 
 DEFAULT_MIRRORS=("https://ghfast.top/" "https://gh-proxy.com/" "")
 
@@ -82,7 +83,7 @@ print_options() {
     printf '  安装版本:     %s\n' "${VERSION:-自动获取最新 release}"
     printf '  下载源:       %s\n' "${MIRROR:-自动（镜像 → 直连）}"
     printf '  离线文件:     %s\n' "${LOCAL_FILE:-不使用}"
-    printf '  面板密码:     %s\n' "$([ -n "$ADMIN_PASSWORD" ] && echo '由 -p 指定' || echo '交互输入 / 非交互自动生成')"
+    printf '  面板密码:     %s\n' "$([ -n "$ADMIN_PASSWORD" ] && echo '已填写' || echo '交互询问 / 自动生成')"
     printf '  服务名:       %s\n' "$SYSTEMD_SERVICE"
 }
 
@@ -91,7 +92,10 @@ usage() {
     cat <<EOF
 
 ${C_B}用法${C_R}
-  sudo bash install-client.sh -s 服务端地址 -k 接入密码 [选项]
+  sudo bash install-client.sh [选项]
+
+  不指定 -y 时进入交互式配置：逐项询问安装选项，直接回车即使用方括号内的默认值。
+  -s / -k 也可以在交互提问时再填写；管道/非终端环境不会询问，必须用参数提供。
 
 ${C_B}必填${C_R}
   -s, --server HOST:PORT   服务端控制面地址，如 203.0.113.10:10000
@@ -103,10 +107,11 @@ ${C_B}安装选项${C_R}（其余均可省略，使用默认值）
   -d, --dir DIR            安装目录          默认: /opt/mtun-client
   --panel ADDR             面板监听地址      默认: 127.0.0.1:10005
                            需要远程访问面板时用 0.0.0.0:10005
-  -p, --password PW        面板登录密码（至少 8 位），不交互
+  -p, --password PW        面板登录密码（至少 8 位）；留空则交互询问
   -v, --version TAG        安装指定版本      默认: 最新 release
   -m, --mirror URL         GitHub 加速前缀，如 https://ghfast.top/
   -f, --file PATH          离线安装：使用本地 linux 二进制
+  -y, --yes                跳过交互询问，全部使用参数与默认值
   -u, --uninstall          卸载（停服务、删 systemd unit、删安装目录）
   -h, --help               显示本帮助
 
@@ -115,11 +120,13 @@ ${C_B}环境变量${C_R}
   MTUN_MIRROR           同 -m
   MTUN_ADMIN_PASSWORD   同 -p
   MTUN_PANEL            同 --panel
+  MTUN_NONINTERACTIVE=1 同 -y（跳过交互询问）
 
 ${C_B}示例${C_R}
-  sudo bash install-client.sh -s 203.0.113.10:10000 -k '接入密码'
-  sudo bash install-client.sh -s 1.2.3.4:10000 -k '接入密码' -n nas --panel 0.0.0.0:10005
-  sudo bash install-client.sh -s 1.2.3.4:10000 -k '接入密码' -f ./mtun-linux-amd64
+  sudo bash install-client.sh                          # 交互式填写，回车取默认
+  sudo bash install-client.sh -s 1.2.3.4:10000 -k '接入密码'   # 仍会询问其余选项
+  sudo bash install-client.sh -s 1.2.3.4:10000 -k '接入密码' -y  # 全参数、不询问
+  sudo bash install-client.sh -s 1.2.3.4:10000 -k '接入密码' -n nas --panel 0.0.0.0:10005 -f ./mtun-linux-amd64 -y
   sudo bash install-client.sh -u
 
 ${C_B}提示${C_R}
@@ -142,6 +149,7 @@ while [[ $# -gt 0 ]]; do
         --panel)        PANEL_ADDR="$2"; shift 2 ;;
         -p|--password)  ADMIN_PASSWORD="$2"; shift 2 ;;
         -u|--uninstall) UNINSTALL=true; shift ;;
+        -y|--yes)       ASSUME_YES=true; shift ;;
         -h|--help)      usage; exit 0 ;;
         *) printf '未知参数: %s（用 -h 查看帮助）\n' "$1" >&2; exit 1 ;;
     esac
@@ -309,8 +317,75 @@ latest_version() {
     return 1
 }
 
+# ---------- 交互式选项 ----------
+INTERACTIVE=true
+if [ "$ASSUME_YES" = true ] || [ -n "${MTUN_NONINTERACTIVE:-}" ] || [ ! -t 0 ]; then
+    INTERACTIVE=false
+fi
+
+trim() {
+    local s="$1"
+    s="${s#"${s%%[![:space:]]*}"}"
+    s="${s%"${s##*[![:space:]]}"}"
+    printf '%s' "$s"
+}
+
+# ask_value <变量名> <标签> <默认值>：回车保留默认值
+ask_value() {
+    local var="$1" label="$2" def="$3" input="" hint
+    if [ "$INTERACTIVE" != true ]; then
+        printf -v "$var" '%s' "$def"
+        return 0
+    fi
+    if [ -n "$def" ]; then hint="$def"; else hint="留空=默认"; fi
+    printf '  %s [%s]: ' "$label" "$hint"
+    IFS= read -r input || input=""
+    input="$(trim "$input")"
+    if [ -z "$input" ]; then
+        printf -v "$var" '%s' "$def"
+    else
+        printf -v "$var" '%s' "$input"
+    fi
+}
+
+# ask_secret <变量名> <标签> <默认说明>：输入不回显，回车保留当前值（为空则自动生成）
+ask_secret() {
+    local var="$1" label="$2" hint="$3" input="" current
+    current="${!var}"
+    if [ "$INTERACTIVE" != true ]; then
+        return 0
+    fi
+    if [ -n "$current" ]; then hint="已设置，回车保持不变"; fi
+    printf '  %s [%s]: ' "$label" "$hint"
+    IFS= read -rs input || input=""
+    printf '\n'
+    if [ -n "$input" ]; then
+        printf -v "$var" '%s' "$input"
+    fi
+}
+
+prompt_options() {
+    if [ "$INTERACTIVE" != true ]; then
+        info "未检测到交互终端或已指定 -y，使用当前参数与默认值"
+        return 0
+    fi
+    printf '\n%s请填写安装选项（直接按回车使用方括号内的默认值）%s\n' "$C_B" "$C_R"
+    ask_value INSTALL_DIR "安装目录" "$INSTALL_DIR"
+    ask_value SERVER_ADDR "服务端地址（如 1.2.3.4:10000）" "$SERVER_ADDR"
+    ask_secret JOIN_KEY "接入密码（必填）" "必填"
+    ask_value NODE_NAME "节点名称（留空=主机名）" "$NODE_NAME"
+    ask_value PANEL_ADDR "面板监听地址" "$PANEL_ADDR"
+    ask_secret ADMIN_PASSWORD "面板登录密码（留空自动生成）" "自动生成"
+    ask_value VERSION "安装版本（如 v0.5.1）" "$VERSION"
+    ask_value MIRROR "GitHub 加速前缀（如 https://ghfast.top/）" "$MIRROR"
+    printf '\n'
+}
+
 # ---------- 主流程 ----------
 print_banner
+if [ "$UNINSTALL" != true ]; then
+    prompt_options
+fi
 print_options
 warn "已禁用 Ctrl+C：安装过程不会因误按而中断（确需中止请关闭终端）"
 
@@ -517,23 +592,19 @@ else
             fail "面板密码至少 8 位"
             exit 1
         fi
-        info "使用 -p 指定的密码"
+        info "使用交互输入的密码"
         if ! "$BIN" passwd -c "$CFG" -password "$ADMIN_PASSWORD" >/dev/null; then
             fail "写入面板密码失败"
             exit 1
         fi
         ADMIN_DISPLAY="$ADMIN_PASSWORD"
-    elif [ -t 0 ]; then
-        info "交互设置（至少 8 位）"
-        "$BIN" passwd -c "$CFG"
-        ADMIN_DISPLAY=""
     else
         ADMIN_PASSWORD="$(head -c 16 /dev/urandom | od -An -tx1 | tr -d ' \n')"
         if ! "$BIN" passwd -c "$CFG" -password "$ADMIN_PASSWORD" >/dev/null; then
             fail "写入面板密码失败"
             exit 1
         fi
-        info "非交互模式，已自动生成面板密码"
+        info "未填写，已自动生成面板密码"
         ADMIN_DISPLAY="$ADMIN_PASSWORD"
     fi
     ok "面板密码已保存: $CFG.passwd"

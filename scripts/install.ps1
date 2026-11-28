@@ -47,6 +47,7 @@ param(
     [string]$LocalFile = "",            # 离线安装：使用本地 exe
     [switch]$UseNSSM = $true,           # 兼容旧命令行；自启方式由 mtun 统一管理
     [switch]$Uninstall = $false,
+    [switch]$Yes = $false,              # 跳过交互询问，全部使用参数与默认值
     [switch]$Help = $false
 )
 
@@ -129,8 +130,8 @@ function Show-Options {
     $localText = $LocalFile
     if (-not $localText) { $localText = "不使用" }
     Write-Host "  离线文件:     $localText"
-    $adminText = "交互输入"
-    if ($AdminPassword) { $adminText = "由 -AdminPassword 指定" }
+    $adminText = "交互询问 / 自动生成"
+    if ($AdminPassword) { $adminText = "已填写" }
     Write-Host "  管理密码:     $adminText"
     $joinText = "保留已有 / 自动生成"
     if ($JoinPassword) { $joinText = "由 -JoinPassword 指定" }
@@ -143,6 +144,9 @@ function Show-Usage {
     Write-Host "用法" -ForegroundColor White
     Write-Host "  powershell -NoProfile -ExecutionPolicy Bypass -File .\install.ps1 [选项]"
     Write-Host ""
+    Write-Host "  不加 -Yes 时进入交互式配置：逐项询问安装选项，直接回车即使用方括号内的默认值。"
+    Write-Host "  非交互终端或已指定 -Yes 时，跳过询问、直接使用参数与默认值。"
+    Write-Host ""
     Write-Host "安装选项（全部可省略，使用默认值）" -ForegroundColor White
     Write-Host "  -InstallDir DIR          安装目录            默认: C:\Program Files\mtun（非管理员为 %USERPROFILE%\mtun）"
     Write-Host "  -Panel ADDR              面板监听地址        默认: 127.0.0.1:10004（远程访问用 0.0.0.0:10004）"
@@ -150,19 +154,22 @@ function Show-Usage {
     Write-Host "  -Version TAG             安装指定版本        默认: 最新 release"
     Write-Host "  -Mirror URL              GitHub 加速前缀，如 https://ghfast.top/"
     Write-Host "  -LocalFile PATH          离线安装：使用本地 exe"
-    Write-Host "  -AdminPassword PW        面板管理密码（至少 8 位），不交互"
-    Write-Host "  -JoinPassword PW         默认接入密码（至少 8 位）；省略则保留已有或自动生成"
+    Write-Host "  -AdminPassword PW        面板管理密码（至少 8 位）；留空则交互询问"
+    Write-Host "  -JoinPassword PW         默认接入密码（至少 8 位）；留空则保留已有或自动生成"
+    Write-Host "  -Yes                     跳过交互询问，全部使用参数与默认值"
     Write-Host "  -Uninstall               卸载（停服务、删自启项、删安装目录）"
     Write-Host "  -Help                    显示本帮助"
     Write-Host ""
     Write-Host "环境变量" -ForegroundColor White
     Write-Host "  MTUN_MIRROR / MTUN_ADMIN_PASSWORD / MTUN_JOIN_PASSWORD / MTUN_PANEL / MTUN_CONTROL"
+    Write-Host "  MTUN_NONINTERACTIVE=1    等同 -Yes"
     Write-Host ""
     Write-Host "示例" -ForegroundColor White
-    Write-Host "  powershell -File .\install.ps1 -AdminPassword '你的面板密码'"
-    Write-Host "  powershell -File .\install.ps1 -Mirror https://ghfast.top/"
-    Write-Host "  powershell -File .\install.ps1 -Panel 0.0.0.0:10004 -Control :10000"
-    Write-Host "  powershell -File .\install.ps1 -LocalFile .\mtun-windows-amd64.exe"
+    Write-Host "  powershell -File .\install.ps1                      # 交互式填写，回车取默认"
+    Write-Host "  powershell -File .\install.ps1 -Yes                  # 全默认、不询问"
+    Write-Host "  powershell -File .\install.ps1 -Mirror https://ghfast.top/ -Yes"
+    Write-Host "  powershell -File .\install.ps1 -Panel 0.0.0.0:10004 -Control :10000 -Yes"
+    Write-Host "  powershell -File .\install.ps1 -LocalFile .\mtun-windows-amd64.exe -Yes"
     Write-Host "  powershell -File .\install.ps1 -Uninstall"
     Write-Host ""
     Write-Host "提示" -ForegroundColor White
@@ -317,6 +324,50 @@ function Enable-Autostart {
     Write-Ok "已启动并配置开机自启（$($result.mode)）"
 }
 
+# ---------- 交互式选项 ----------
+function Read-TextOption {
+    param([string]$Label, [string]$Default)
+    if (-not $Interactive) { return $Default }
+    $hint = if ($Default) { $Default } else { "留空=默认" }
+    $value = Read-Host "  $Label [$hint]"
+    if ([string]::IsNullOrWhiteSpace($value)) { return $Default }
+    return $value.Trim()
+}
+
+function Read-SecretOption {
+    param([string]$Label, [string]$Current, [string]$Hint)
+    if (-not $Interactive) { return $Current }
+    $display = $Hint
+    if ($Current) { $display = "已设置，回车保持不变" }
+    $sec = Read-Host "  $Label [$display]" -AsSecureString
+    $bstr = [Runtime.InteropServices.Marshal]::SecureStringToBSTR($sec)
+    try {
+        $plain = [Runtime.InteropServices.Marshal]::PtrToStringBSTR($bstr)
+    } finally {
+        [Runtime.InteropServices.Marshal]::ZeroFreeBSTR($bstr)
+    }
+    if ([string]::IsNullOrWhiteSpace($plain)) { return $Current }
+    return $plain.Trim()
+}
+
+function Read-InteractiveOptions {
+    if (-not $Interactive) {
+        Write-Detail "未检测到交互终端或已指定 -Yes，使用当前参数与默认值"
+        return
+    }
+    Write-Host ""
+    Write-Host "请填写安装选项（直接按回车使用方括号内的默认值）" -ForegroundColor White
+    $script:InstallDir    = Read-TextOption "安装目录" $script:InstallDir
+    $script:Panel         = Read-TextOption "面板监听地址" $script:Panel
+    $script:Control       = Read-TextOption "控制面监听端口" $script:Control
+    $script:JoinPassword  = Read-SecretOption "默认接入密码（留空自动生成）" $script:JoinPassword "自动生成"
+    $script:AdminPassword = Read-SecretOption "面板管理密码（留空自动生成）" $script:AdminPassword "自动生成"
+    $script:Version       = Read-TextOption "安装版本（如 v0.5.1）" $script:Version
+    $script:Mirror        = Read-TextOption "GitHub 加速前缀（如 https://ghfast.top/）" $script:Mirror
+    $script:InstallDir    = [System.IO.Path]::GetFullPath($script:InstallDir)
+    Write-Host ""
+}
+
 # ---------- 参数默认值 ----------
 if (-not $InstallDir) {
     if (Test-Admin) { $InstallDir = "C:\Program Files\mtun" }
@@ -326,18 +377,13 @@ $InstallDir = [System.IO.Path]::GetFullPath($InstallDir)
 if (-not $Panel)   { $Panel = "127.0.0.1:10004" }
 if (-not $Control) { $Control = ":10000" }
 
-$mirrorList = if ($Mirror) { @($Mirror) } else { @("https://ghfast.top/", "https://gh-proxy.com/", "") }
-
-$binDir = Join-Path $InstallDir "bin"
-$cfgDir = Join-Path $InstallDir "configs"
-$logDir = Join-Path $InstallDir "logs"
-$cfg = Join-Path $cfgDir "server.yaml"
-$exe = Join-Path $binDir "mtun.exe"
+$Interactive = $true
+if ($Yes -or $env:MTUN_NONINTERACTIVE -or -not [Environment]::UserInteractive) { $Interactive = $false }
+try { if ([Console]::IsInputRedirected) { $Interactive = $false } } catch { }
 
 # ---------- 横幅与选项 ----------
 Write-Banner
 if ($Help) { Show-Usage; exit 0 }
-Show-Options
 
 # ---------- Ctrl+C 防误触 ----------
 $ctrlCGuarded = $false
@@ -349,6 +395,17 @@ try {
 } catch {
     Write-WarnLine "当前会话无法启用 Ctrl+C 保护（非交互终端），请勿在安装过程中关闭窗口"
 }
+
+# ---------- 交互填写与生效配置 ----------
+if (-not $Uninstall) { Read-InteractiveOptions }
+Show-Options
+
+$mirrorList = if ($Mirror) { @($Mirror) } else { @("https://ghfast.top/", "https://gh-proxy.com/", "") }
+$binDir = Join-Path $InstallDir "bin"
+$cfgDir = Join-Path $InstallDir "configs"
+$logDir = Join-Path $InstallDir "logs"
+$cfg = Join-Path $cfgDir "server.yaml"
+$exe = Join-Path $binDir "mtun.exe"
 
 try {
     # ---------- 卸载 ----------
@@ -533,13 +590,16 @@ publish:
     } else {
         if ($AdminPassword) {
             if ($AdminPassword.Length -lt 8) { throw "管理密码至少 8 位" }
-            Write-Info "使用 -AdminPassword 指定的密码"
+            Write-Info "使用交互输入的密码"
             & $exe passwd -c $cfg -password $AdminPassword | Out-Null
             $adminDisplay = $AdminPassword
         } else {
-            Write-Info "交互设置（至少 8 位）"
-            & $exe passwd -c $cfg
-            $adminDisplay = ""
+            $bytes = New-Object byte[] 16
+            [System.Security.Cryptography.RandomNumberGenerator]::Create().GetBytes($bytes) | Out-Null
+            $AdminPassword = -join ($bytes | ForEach-Object { $_.ToString("x2") })
+            & $exe passwd -c $cfg -password $AdminPassword | Out-Null
+            Write-Info "未填写，已自动生成管理密码"
+            $adminDisplay = $AdminPassword
         }
         if ($LASTEXITCODE -ne 0 -or -not (Test-Path $passFile)) {
             throw "管理密码未设置，安装已终止"

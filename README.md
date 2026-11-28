@@ -58,14 +58,17 @@ Release 资源（两个仓库一致）：
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/zhangsong-08/mtun-remote-server/main/scripts/install.sh -o install.sh
-sudo bash install.sh -p '你的面板管理密码'
+sudo bash install.sh
 ```
 
-脚本会：下载最新版本 → 安装到 `/opt/mtun` → 生成 `server.yaml` → 设置管理密码 → 注册并启动 systemd 服务 `mtun-server`。
+脚本会**逐项询问安装选项**（安装目录、面板地址、控制面端口、默认接入密码、管理密码、版本、下载源），每项后面方括号里就是默认值，**直接回车即使用默认**。之后：下载最新版本 → 安装到 `/opt/mtun` → 生成 `server.yaml` → 设置密码 → 注册并启动 systemd 服务 `mtun-server`。
+
+不想交互时加 `-y`（或设 `MTUN_NONINTERACTIVE=1`），全部走参数与默认值；`curl | bash` 这类非终端环境会自动跳过询问。
 
 常用参数：
 
 ```bash
+sudo bash install.sh -y                              # 全默认、不询问
 sudo bash install.sh -m https://ghfast.top/          # 国内服务器走加速镜像
 sudo bash install.sh --file ./mtun-linux-amd64       # 离线安装（先 scp 上传）
 sudo bash install.sh --panel 0.0.0.0:10004           # 允许远程访问面板（需自行做防火墙限制）
@@ -85,26 +88,28 @@ curl.exe -fsSL https://raw.githubusercontent.com/zhangsong-08/mtun-remote-server
 powershell -NoProfile -ExecutionPolicy Bypass -File .\install.ps1
 ```
 
-默认安装到 `C:\Program Files\mtun`（非管理员为 `%USERPROFILE%\mtun`），并注册开机自启。
+同样会逐项询问选项，回车取默认值；加 `-Yes` 可跳过询问。默认安装到 `C:\Program Files\mtun`（非管理员为 `%USERPROFILE%\mtun`），并注册开机自启。
 
-参数：`-AdminPassword`、`-JoinPassword`、`-Panel`、`-Control`、`-InstallDir`、`-Version`、`-Mirror`、`-LocalFile`、`-Uninstall`、`-Help`。
+参数：`-AdminPassword`、`-JoinPassword`、`-Panel`、`-Control`、`-InstallDir`、`-Version`、`-Mirror`、`-LocalFile`、`-Yes`、`-Uninstall`、`-Help`。
 运行 `-Help` 可查看全部选项与默认值。
 
 ### 2.3 客户端（Linux，一键脚本）
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/zhangsong-08/mtun-remote-client/main/scripts/install-client.sh -o install-client.sh
-sudo bash install-client.sh -s 你的服务器IP:10000 -k '接入密码' -n nas
+sudo bash install-client.sh
 ```
 
-- `-s`：服务端控制面地址（**必填**）
-- `-k`：接入密码（**必填**，由服务端管理员提供，见第 3 节）
+不填参数时也可以直接运行：脚本会依次询问**服务端地址、接入密码、节点名称、安装目录、面板地址、面板密码、版本、下载源**，回车即用默认值。
+
+- `-s`：服务端控制面地址（**必填**，也可交互输入）
+- `-k`：接入密码（**必填**，由服务端管理员提供，见第 3 节，也可交互输入）
 - `-n`：节点名称，默认取主机名，多台设备请保证名字好辨认
 - 安装到 `/opt/mtun-client`，注册 systemd 服务 `mtun-client`
 - `-u` 卸载；`--panel 0.0.0.0:10005` 允许远程访问客户端面板
-- `-p` 直接指定面板登录密码；`-f` 离线安装；`-h` 查看全部选项与默认值
+- `-p` 直接指定面板登录密码；`-f` 离线安装；`-y` 跳过交互；`-h` 查看全部选项与默认值
 
-安装过程同样会打印 MTUN 横幅、版权、最后更新时间、选项清单，以及分步进度与下载百分比；Ctrl+C 被忽略，不会中断安装。
+安装过程同样会打印 MTUN 横幅、版权、最后更新时间、选项清单，以及分步进度与下载百分比；Ctrl+C 被忽略，不会中断安装。非终端环境（如 `curl | bash`）会自动跳过询问，此时必须用 `-s` 和 `-k` 提供地址与密码。
 
 ### 2.4 客户端（Windows，一键脚本）
 
@@ -112,12 +117,14 @@ sudo bash install-client.sh -s 你的服务器IP:10000 -k '接入密码' -n nas
 
 ```powershell
 curl.exe -fsSL https://raw.githubusercontent.com/zhangsong-08/mtun-remote-client/main/scripts/install-client.ps1 -o install-client.ps1
-powershell -NoProfile -ExecutionPolicy Bypass -File .\install-client.ps1 -Server 你的服务器IP:10000 -Key '接入密码' -Node office-pc
+powershell -NoProfile -ExecutionPolicy Bypass -File .\install-client.ps1
 ```
+
+运行时逐项询问，回车取默认；也可以一次性传参（`-Server`、`-Key`、`-Node` …）并加 `-Yes` 跳过询问。
 
 默认安装到 `C:\Program Files\mtun-client`（非管理员为 `%USERPROFILE%\mtun-client`），并注册开机自启。
 
-参数：`-Server`、`-Key`、`-Node`、`-Panel`、`-AdminPassword`、`-InstallDir`、`-Version`、`-Mirror`、`-LocalFile`、`-Uninstall`、`-Help`。
+参数：`-Server`、`-Key`、`-Node`、`-Panel`、`-AdminPassword`、`-InstallDir`、`-Version`、`-Mirror`、`-LocalFile`、`-Yes`、`-Uninstall`、`-Help`。
 
 ### 2.5 手动运行（任意平台，不用脚本）
 
