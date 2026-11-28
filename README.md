@@ -69,8 +69,12 @@ sudo bash install.sh -p '你的面板管理密码'
 sudo bash install.sh -m https://ghfast.top/          # 国内服务器走加速镜像
 sudo bash install.sh --file ./mtun-linux-amd64       # 离线安装（先 scp 上传）
 sudo bash install.sh --panel 0.0.0.0:10004           # 允许远程访问面板（需自行做防火墙限制）
+sudo bash install.sh --control :10000                # 控制面监听端口（默认 :10000）
+sudo bash install.sh --join-password '接入密码'       # 直接指定默认接入密码（省略则自动生成）
 sudo bash install.sh -u                              # 卸载
 ```
+
+脚本头部会打印 MTUN 横幅、版权、最后更新时间与全部安装选项的生效值；安装按 `[步骤/总数]` 打印，下载显示百分比、已下载/总大小与实时速度。安装过程中 Ctrl+C 会被忽略，避免误触中断造成半安装状态（确需中止请关闭终端）。
 
 ### 2.2 服务端（Windows，一键脚本）
 
@@ -81,7 +85,10 @@ curl.exe -fsSL https://raw.githubusercontent.com/zhangsong-08/mtun-remote-server
 powershell -NoProfile -ExecutionPolicy Bypass -File .\install.ps1
 ```
 
-默认安装到 `C:\Program Files\mtun`（非管理员为 `%USERPROFILE%\mtun`），并注册开机自启。参数：`-AdminPassword`、`-InstallDir`、`-Mirror`、`-LocalFile`、`-Uninstall`。
+默认安装到 `C:\Program Files\mtun`（非管理员为 `%USERPROFILE%\mtun`），并注册开机自启。
+
+参数：`-AdminPassword`、`-JoinPassword`、`-Panel`、`-Control`、`-InstallDir`、`-Version`、`-Mirror`、`-LocalFile`、`-Uninstall`、`-Help`。
+运行 `-Help` 可查看全部选项与默认值。
 
 ### 2.3 客户端（Linux，一键脚本）
 
@@ -95,6 +102,9 @@ sudo bash install-client.sh -s 你的服务器IP:10000 -k '接入密码' -n nas
 - `-n`：节点名称，默认取主机名，多台设备请保证名字好辨认
 - 安装到 `/opt/mtun-client`，注册 systemd 服务 `mtun-client`
 - `-u` 卸载；`--panel 0.0.0.0:10005` 允许远程访问客户端面板
+- `-p` 直接指定面板登录密码；`-f` 离线安装；`-h` 查看全部选项与默认值
+
+安装过程同样会打印 MTUN 横幅、版权、最后更新时间、选项清单，以及分步进度与下载百分比；Ctrl+C 被忽略，不会中断安装。
 
 ### 2.4 客户端（Windows，一键脚本）
 
@@ -105,7 +115,9 @@ curl.exe -fsSL https://raw.githubusercontent.com/zhangsong-08/mtun-remote-client
 powershell -NoProfile -ExecutionPolicy Bypass -File .\install-client.ps1 -Server 你的服务器IP:10000 -Key '接入密码' -Node office-pc
 ```
 
-默认安装到 `C:\Program Files\mtun-client`（非管理员为 `%USERPROFILE%\mtun-client`），并注册开机自启。参数：`-Panel`、`-AdminPassword`、`-Mirror`、`-LocalFile`、`-Uninstall`。
+默认安装到 `C:\Program Files\mtun-client`（非管理员为 `%USERPROFILE%\mtun-client`），并注册开机自启。
+
+参数：`-Server`、`-Key`、`-Node`、`-Panel`、`-AdminPassword`、`-InstallDir`、`-Version`、`-Mirror`、`-LocalFile`、`-Uninstall`、`-Help`。
 
 ### 2.5 手动运行（任意平台，不用脚本）
 
