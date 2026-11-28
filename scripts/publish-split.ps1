@@ -76,8 +76,11 @@ foreach ($role in $roles) {
     Write-Host ""
     Write-Host "==> 生成 $name 仓库快照"
 
-    & git -C $Root worktree remove --force $tree 2>$null | Out-Null
-    & git -C $Root branch -D $branch 2>$null | Out-Null
+    if (Test-Path $tree) {
+        try { & git -C $Root worktree remove --force $tree 2>&1 | Out-Null } catch { }
+    }
+    try { & git -C $Root worktree prune 2>&1 | Out-Null } catch { }
+    try { & git -C $Root branch -D $branch 2>&1 | Out-Null } catch { }
     Invoke-Git $Root @("worktree", "add", "-B", $branch, $tree, "main") | Out-Null
 
     foreach ($rel in $role.Exclude) {
@@ -107,7 +110,7 @@ foreach ($role in $roles) {
         Write-Host "    未推送（加 -Push 生效）"
     }
 
-    & git -C $Root worktree remove --force $tree | Out-Null
+    try { & git -C $Root worktree remove --force $tree 2>&1 | Out-Null } catch { }
 }
 
 Write-Host ""
