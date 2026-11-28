@@ -43,6 +43,10 @@ type Server struct {
 
 	mu    sync.Mutex
 	conns map[string]*clientConn
+
+	// joinMu 保护待批准的接入申请队列（仅内存，重连后需重新申请）。
+	joinMu   sync.Mutex
+	joinReqs map[string]*joinTicket
 }
 
 // clientConn 封装单个节点的控制流写入，避免状态回执与 peers 推送并发写同一编码器。
@@ -61,13 +65,14 @@ func (c *clientConn) send(kind string, payload any) error {
 
 func NewServer(addr, token, cfgPath string, reg *state.Registry, tunnels *tunnel.Manager, log *slog.Logger) *Server {
 	s := &Server{
-		addr:    addr,
-		token:   token,
-		cfgPath: cfgPath,
-		reg:     reg,
-		tunnels: tunnels,
-		log:     log,
-		conns:   map[string]*clientConn{},
+		addr:     addr,
+		token:    token,
+		cfgPath:  cfgPath,
+		reg:      reg,
+		tunnels:  tunnels,
+		log:      log,
+		conns:    map[string]*clientConn{},
+		joinReqs: map[string]*joinTicket{},
 	}
 	if cfgPath != "" {
 		accessPath := cfgPath + ".access.json"
@@ -176,6 +181,13 @@ func (s *Server) handle(ctx context.Context, conn net.Conn) {
 
 	dec := json.NewDecoder(stream)
 	cc := &clientConn{enc: json.NewEncoder(stream)}
+
+	host := joinHost(remote)
+	if usedToken == secure.RequestSeed() {
+		// 无密码申请接入：独立处理，不进入节点注册流程。
+		s.serveJoin(cc, dec, remote, host)
+		return
+	}
 
 	nodeID := ""
 	defer func() {
@@ -490,6 +502,11 @@ func (s *Server) pickToken(sni string) (string, bool) {
 
 // tokenForSNI 把 SNI 指纹反查成实际密码；空字符串表示无法识别。
 func (s *Server) tokenForSNI(sni string) string {
+	if sni == secure.RequestFingerprint() {
+		// 申请通道：使用公开的申请口令完成握手，不授予任何节点权限，
+		// 后续必须由管理员在面板批准才会下发该节点的独立密码。
+		return secure.RequestSeed()
+	}
 	if sni == "" || sni == "mtun" {
 		if s.passwords.AllowDefault() {
 			return s.token

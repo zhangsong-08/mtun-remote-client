@@ -67,7 +67,7 @@
       <section class="page" id="page-server" hidden>
         <div class="page-head">
           <h1>服务端</h1>
-          <span class="muted">地址与接入密码由服务端管理员提供</span>
+          <span class="muted">留空接入密码时，会自动向服务端申请接入，由管理员在服务端面板批准</span>
         </div>
         <div class="panel">
           <div class="panel-head">
@@ -78,8 +78,8 @@
             <label>服务端地址
               <input id="server" placeholder="1.2.3.4:10000" autocomplete="off" required>
             </label>
-            <label>接入密码
-              <input id="key" type="password" autocomplete="new-password" placeholder="首次必填，之后留空表示不修改">
+            <label>接入密码（可留空）
+              <input id="key" type="password" autocomplete="new-password" placeholder="留空则向服务端申请接入，由管理员批准">
             </label>
             <button type="submit">保存并重连</button>
           </form>

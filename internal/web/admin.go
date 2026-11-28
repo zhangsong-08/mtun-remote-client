@@ -483,6 +483,88 @@ func (s *Server) handleNodePassword(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+// handleJoinRequests 管理「无密码申请接入」：
+// GET 返回开关与待批准列表；POST 执行批准/拒绝或切换开关（需 PIN）。
+func (s *Server) handleJoinRequests(w http.ResponseWriter, r *http.Request) {
+	if s.ctl == nil {
+		webx.WriteError(w, http.StatusInternalServerError, errors.New("控制面未初始化"))
+		return
+	}
+	switch r.Method {
+	case http.MethodGet:
+		webx.WriteJSON(w, map[string]any{
+			"allow_request": s.ctl.AllowJoinRequest(),
+			"requests":      s.ctl.JoinRequests(),
+		})
+		return
+	case http.MethodPost:
+	default:
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		return
+	}
+	if !isJSON(r) {
+		webx.WriteError(w, http.StatusUnsupportedMediaType, errors.New("请求需为 application/json"))
+		return
+	}
+	var req struct {
+		PIN    string `json:"pin"`
+		Action string `json:"action"`
+		ID     string `json:"id"`
+		Reason string `json:"reason"`
+		Allow  *bool  `json:"allow"`
+	}
+	if err := decodeJSONBody(r, &req); err != nil {
+		webx.WriteError(w, http.StatusBadRequest, err)
+		return
+	}
+	if err := s.requirePIN(strings.TrimSpace(req.PIN)); err != nil {
+		s.writePINError(w, err)
+		return
+	}
+	id := strings.TrimSpace(req.ID)
+	switch strings.ToLower(strings.TrimSpace(req.Action)) {
+	case "approve":
+		if id == "" {
+			webx.WriteError(w, http.StatusBadRequest, errors.New("缺少申请 ID"))
+			return
+		}
+		pw, node, err := s.ctl.ApproveJoin(id)
+		if err != nil {
+			webx.WriteError(w, http.StatusConflict, err)
+			return
+		}
+		s.log.Info("已批准接入申请", "node", node)
+		webx.WriteJSON(w, map[string]any{
+			"ok":       true,
+			"node":     node,
+			"password": pw,
+			"message":  "已批准，密码已下发给该客户端并保存为哈希",
+		})
+	case "reject":
+		if id == "" {
+			webx.WriteError(w, http.StatusBadRequest, errors.New("缺少申请 ID"))
+			return
+		}
+		if err := s.ctl.RejectJoin(id, strings.TrimSpace(req.Reason)); err != nil {
+			webx.WriteError(w, http.StatusConflict, err)
+			return
+		}
+		webx.WriteJSON(w, map[string]any{"ok": true, "id": id})
+	case "allow":
+		if req.Allow == nil {
+			webx.WriteError(w, http.StatusBadRequest, errors.New("缺少 allow 字段"))
+			return
+		}
+		if err := s.ctl.SetAllowJoinRequest(*req.Allow); err != nil {
+			webx.WriteError(w, http.StatusInternalServerError, err)
+			return
+		}
+		webx.WriteJSON(w, map[string]any{"ok": true, "allow_request": *req.Allow})
+	default:
+		webx.WriteError(w, http.StatusBadRequest, errors.New("action 只能是 approve/reject/allow"))
+	}
+}
+
 // handleDefaultPassword 查询或切换「允许使用默认密码接入」开关。
 // 查询不需要 PIN；切换会改变全局接入策略，需要 PIN。
 func (s *Server) handleDefaultPassword(w http.ResponseWriter, r *http.Request) {

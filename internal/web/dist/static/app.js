@@ -494,8 +494,106 @@ async function toggleDefaultPassword(event) {
   renderCryptoDefaultState();
 }
 
-async function submitPIN(event) {
-  event.preventDefault();
+async function loadJoinRequests() {
+  try {
+    const data = await getJSON("/api/join/requests");
+    $("allow-join-request").checked = !!data.allow_request;
+    renderJoinRows(data.requests || []);
+  } catch (_) {
+    /* 忽略：下次刷新重试 */
+  }
+}
+
+function renderJoinRows(list) {
+  const tbody = $("join-rows");
+  tbody.textContent = "";
+  $("join-count").textContent = list.length ? list.length + " 条待处理" : "暂无待处理申请";
+  if (!list.length) {
+    emptyRow(tbody, 5, "暂无接入申请");
+    return;
+  }
+  for (const req of list) {
+    const tr = document.createElement("tr");
+    tr.appendChild(cell(req.node_id));
+    tr.appendChild(cell(req.ip || "-", true));
+    tr.appendChild(cell(req.version || "-"));
+    tr.appendChild(cell(fmtTime(req.created_at)));
+
+    const opTd = document.createElement("td");
+    const approve = document.createElement("button");
+    approve.type = "button";
+    approve.className = "btn-link";
+    approve.textContent = "同意";
+    approve.addEventListener("click", () => joinAction("approve", req));
+    const reject = document.createElement("button");
+    reject.type = "button";
+    reject.className = "btn-link link-danger";
+    reject.style.marginLeft = "8px";
+    reject.textContent = "拒绝";
+    reject.addEventListener("click", () => joinAction("reject", req));
+    opTd.append(approve, reject);
+    tr.appendChild(opTd);
+    tbody.appendChild(tr);
+  }
+}
+
+function showJoinResult(label, password) {
+  $("join-result-label").textContent = label;
+  $("join-password").textContent = password;
+  $("join-result").hidden = false;
+}
+
+async function joinAction(action, req) {
+  const pin = cryptoPIN();
+  if (!pin) return;
+  let reason = "";
+  if (action === "reject") {
+    if (!confirm("确定拒绝节点「" + req.node_id + "」的接入申请？")) return;
+    reason = "管理员拒绝了本次接入申请";
+  }
+  try {
+    const data = await postJSON("/api/join/requests", { pin, action, id: req.id, reason });
+    if (action === "approve") {
+      showJoinResult("已批准「" + req.node_id + "」，该密码已自动下发给客户端，可留档保存", data.password);
+      setMsg("join-msg", "已批准，客户端会自动用新密码接入", true);
+    } else {
+      setMsg("join-msg", "已拒绝该申请", true);
+    }
+    await loadJoinRequests();
+    await refresh();
+  } catch (err) {
+    setMsg("join-msg", err.message);
+  }
+}
+
+async function toggleJoinRequest(event) {
+  const allow = event.target.checked;
+  const pin = cryptoPIN();
+  if (!pin) {
+    event.target.checked = !allow;
+    return;
+  }
+  try {
+    await postJSON("/api/join/requests", { pin, action: "allow", allow });
+    setMsg("join-msg", allow ? "已允许无密码申请接入" : "已关闭申请接入，新客户端必须使用密码", true);
+  } catch (err) {
+    event.target.checked = !allow;
+    setMsg("join-msg", err.message);
+  }
+}
+
+async function copyJoinResult() {
+  const value = $("join-password").textContent;
+  if (!value) return;
+  try {
+    await navigator.clipboard.writeText(value);
+    setMsg("join-msg", "密码已复制", true);
+  } catch (_) {
+    setMsg("join-msg", "复制失败，请手动选中复制");
+  }
+}
+
+async function submitPIN(event) {  event.preventDefault();
   const body = { pin: $("pin-new").value.trim(), confirm: $("pin-confirm").value.trim() };
   if (state.pinSet) body.current_pin = $("pin-current").value.trim();
   try {
@@ -1032,6 +1130,7 @@ function navigate() {
     renderCryptoNodes();
     renderCryptoSelect();
     loadDefaultPassword();
+    loadJoinRequests();
   }
   if (page === "panel") {
     loadPanel();
@@ -1058,6 +1157,10 @@ async function refresh() {
 
   const failed = results.filter((r) => r.status === "rejected");
   failed.forEach((r) => console.warn("接口不可用:", r.reason));
+  const activeNav = document.querySelector(".nav a.active");
+  if (activeNav && activeNav.dataset.page === "crypto") {
+    loadJoinRequests();
+  }
   if (failed.length === results.length) {
     $("uptime").textContent = "控制台连接中断";
   } else if (failed.length > 0) {
@@ -1104,6 +1207,9 @@ $("crypto-search").addEventListener("input", (e) => {
   renderCryptoNodes();
 });
 $("allow-default-password").addEventListener("change", toggleDefaultPassword);
+$("allow-join-request").addEventListener("change", toggleJoinRequest);
+$("join-refresh").addEventListener("click", loadJoinRequests);
+$("join-copy").addEventListener("click", copyJoinResult);
 document.querySelectorAll("dialog [data-close]").forEach((btn) => {
   btn.addEventListener("click", () => btn.closest("dialog").close());
 });

@@ -7,6 +7,7 @@ import (
 	"context"
 	"crypto/tls"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net"
@@ -237,4 +238,106 @@ func (c *Client) handleDataStream(stream *yamux.Stream) {
 
 	c.log.Debug("隧道数据转发", "rule", header.Rule, "target", target)
 	netx.Splice(stream, upstream)
+}
+
+// RequestAccess 在客户端没有接入密码时，通过公开的「申请通道」向服务端提交接入申请。
+// 服务端批准后返回一次性明文密码，调用方应立即保存哈希并丢弃明文。
+// onPending 在服务端登记申请后回调一次，用于界面展示「等待批准」。
+func RequestAccess(ctx context.Context, server, nodeID, version string,
+	onPending func(proto.JoinPending), log *slog.Logger) (string, error) {
+
+	tlsCfg, err := secure.ClientConfig(secure.RequestSeed())
+	if err != nil {
+		return "", err
+	}
+	dialer := &net.Dialer{Timeout: 10 * time.Second}
+	conn, err := tls.DialWithDialer(dialer, "tcp", server, tlsCfg)
+	if err != nil {
+		return "", fmt.Errorf("连接服务端 %s 失败: %w", server, err)
+	}
+	defer conn.Close()
+
+	sess, err := yamux.Client(conn, yamuxConfig())
+	if err != nil {
+		return "", fmt.Errorf("建立申请会话: %w", err)
+	}
+	defer sess.Close()
+	go func() {
+		<-ctx.Done()
+		_ = sess.Close()
+	}()
+
+	stream, err := sess.OpenStream()
+	if err != nil {
+		return "", err
+	}
+	defer stream.Close()
+
+	enc := json.NewEncoder(stream)
+	dec := json.NewDecoder(stream)
+
+	if err := proto.Send(enc, proto.TypeJoinRequest, proto.Register{
+		NodeID:  nodeID,
+		Version: version,
+		OS:      runtime.GOOS,
+	}); err != nil {
+		return "", err
+	}
+	log.Info("已提交接入申请，等待服务端批准", "server", server, "node", nodeID)
+
+	// 等待期间发送心跳，保持 NAT 映射与服务端连接活跃。
+	stop := make(chan struct{})
+	defer close(stop)
+	go func() {
+		ticker := time.NewTicker(20 * time.Second)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-stop:
+				return
+			case <-ticker.C:
+				if err := proto.Send(enc, proto.TypeHeartbeat, proto.Heartbeat{NodeID: nodeID}); err != nil {
+					return
+				}
+			}
+		}
+	}()
+
+	for {
+		env, err := proto.Receive(dec)
+		if err != nil {
+			if ctx.Err() != nil {
+				return "", ctx.Err()
+			}
+			return "", fmt.Errorf("申请会话已断开: %w", err)
+		}
+		switch env.Type {
+		case proto.TypeJoinPending:
+			var p proto.JoinPending
+			if err := json.Unmarshal(env.Payload, &p); err != nil {
+				return "", fmt.Errorf("解析申请回执失败: %w", err)
+			}
+			if onPending != nil {
+				onPending(p)
+			}
+		case proto.TypeJoinDecision:
+			var d proto.JoinDecision
+			if err := json.Unmarshal(env.Payload, &d); err != nil {
+				return "", fmt.Errorf("解析审批结果失败: %w", err)
+			}
+			if d.Approved && d.Password != "" {
+				return d.Password, nil
+			}
+			if d.Message == "" {
+				d.Message = "服务端拒绝了本次接入申请"
+			}
+			return "", errors.New(d.Message)
+		case proto.TypeError:
+			var e proto.Error
+			if err := json.Unmarshal(env.Payload, &e); err != nil {
+				return "", fmt.Errorf("申请被拒绝")
+			}
+			return "", errors.New(e.Message)
+		}
+	}
 }

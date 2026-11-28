@@ -16,3 +16,5 @@ logs/
 # runtime configs (keep only examples)
 configs/server.yaml
 configs/client.yaml
+# 拆分仓库时生成的临时工作树
+.split/

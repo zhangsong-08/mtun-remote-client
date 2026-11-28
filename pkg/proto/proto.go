@@ -21,7 +21,27 @@ const (
 	TypeAclUpdate = "acl_update"
 	// TypeRulesSync 由服务端下发给规则所属客户端：服务端增删改后的完整规则列表。
 	TypeRulesSync = "rules_sync"
+	// TypeJoinRequest 客户端没有接入密码时发起申请（明文密码不参与握手）。
+	TypeJoinRequest = "join_request"
+	// TypeJoinPending 服务端已登记申请，等待管理员在面板批准或拒绝。
+	TypeJoinPending = "join_pending"
+	// TypeJoinDecision 服务端审批结果：同意时附带一次性下发的节点接入密码。
+	TypeJoinDecision = "join_decision"
 )
+
+// JoinPending 告知客户端申请已进入服务端待批准队列。
+type JoinPending struct {
+	RequestID string `json:"request_id"`
+	ExpiresAt int64  `json:"expires_at"` // Unix 秒
+	Message   string `json:"message,omitempty"`
+}
+
+// JoinDecision 是审批结果。Password 仅在同意时出现一次，客户端应立即保存哈希。
+type JoinDecision struct {
+	Approved bool   `json:"approved"`
+	Password string `json:"password,omitempty"`
+	Message  string `json:"message,omitempty"`
+}
 
 // 规则可见范围。空值与 VisibleAll 等价，兼容旧配置。
 const (

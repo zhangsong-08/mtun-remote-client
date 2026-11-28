@@ -15,6 +15,7 @@ import (
 	"errors"
 	"fmt"
 	"math/big"
+	"sync"
 	"time"
 
 	"mtun/internal/secret"
@@ -76,6 +77,34 @@ func verifyPeer(expected ed25519.PublicKey) func([][]byte, [][]*x509.Certificate
 // 服务端只保存 seed，客户端在设置密码时即时计算，二者都不落盘明文。
 func Seed(password string) string {
 	return secret.Seed(password)
+}
+
+// requestPassword 是公开固定的「申请口令」，仅用于让没有接入密码的客户端
+// 完成 TLS 握手并提交接入申请。它不授予任何节点权限：
+// 服务端收到申请后必须由管理员在面板批准，才会下发该节点自己的密码。
+const requestPassword = "mtun-join-request-v1"
+
+var (
+	requestSeedOnce sync.Once
+	requestSeedVal  string
+	requestSNIOnce  sync.Once
+	requestSNIVal   string
+)
+
+// RequestSeed 返回申请通道使用的本地哈希，所有安装共用同一值。
+func RequestSeed() string {
+	requestSeedOnce.Do(func() {
+		requestSeedVal = secret.Seed(requestPassword)
+	})
+	return requestSeedVal
+}
+
+// RequestFingerprint 返回申请通道的 SNI 标识。
+func RequestFingerprint() string {
+	requestSNIOnce.Do(func() {
+		requestSNIVal = TokenFingerprint(RequestSeed())
+	})
+	return requestSNIVal
 }
 
 // ServerConfig 要求客户端出示证书，并在回调中与派生公钥比对。

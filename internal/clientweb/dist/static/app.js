@@ -276,21 +276,30 @@ function renderStatus(status) {
   $("side-version").textContent = status.version ? `v${status.version}` : "mtun";
 
   const stateEl = $("conn-state");
-  stateEl.textContent = status.connected ? "已连接" : "未连接";
-  stateEl.className = "value small " + (status.connected ? "ok" : "bad");
+  if (status.connected) {
+    stateEl.textContent = "已连接";
+    stateEl.className = "value small ok";
+  } else if (status.join_pending) {
+    stateEl.textContent = "等待批准";
+    stateEl.className = "value small warn";
+  } else {
+    stateEl.textContent = "未连接";
+    stateEl.className = "value small bad";
+  }
 
   $("node-id").textContent = status.node_id || status.node || "-";
   $("overlay").textContent = status.overlay_ip || "-";
   $("uptime").textContent = status.connected ? fmtDuration(status.connected_seconds) : "-";
 
   $("info-server").textContent = status.server || "未配置";
-  $("info-access").textContent = status.has_access ? "已保存" : "未配置";
+  $("info-access").textContent = status.has_access ? "已保存" : status.join_pending ? "申请待批准" : "未配置";
   $("info-rules").textContent = (status.rules || []).length;
   $("info-version").textContent = status.version || "-";
 
   const errEl = $("error");
-  if (status.error) {
-    errEl.textContent = status.error;
+  const notice = status.error || (status.join_pending ? status.join_message || "已提交接入申请，等待服务端批准" : "");
+  if (notice) {
+    errEl.textContent = notice;
     errEl.hidden = false;
   } else {
     errEl.hidden = true;
@@ -300,7 +309,11 @@ function renderStatus(status) {
     $("server").value = status.server;
   }
   state.serverPrefilled = true;
-  $("key").placeholder = status.has_access ? "留空表示不修改（已保存接入密码）" : "首次必填，之后留空表示不修改";
+  $("key").placeholder = status.has_access
+    ? "留空表示不修改（已保存接入密码）"
+    : status.join_pending
+    ? "服务端批准后自动写入，无需手动填写"
+    : "留空则向服务端申请接入，由管理员批准";
 
   renderRules(status.rules || []);
   renderPeers(status.peers || [], status.server);

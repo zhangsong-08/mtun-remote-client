@@ -167,6 +167,7 @@ func usage() {
   mtun nodes   [-url 地址] [-c 配置文件]                查看服务端节点
   mtun kick    -id 节点ID [-ban 60s] [-c 服务端配置]    强制下线并临时封禁该节点
   mtun connect -server host:port [-key 接入密码] [-c 客户端配置]
+                                               无 key 时自动向服务端申请接入
   mtun rule add -name 名称 -listen 10101 -target 127.0.0.1:5000 [-proto tcp] [-c 客户端配置]
   mtun rule list   [-c 客户端配置]
   mtun rule delete -name 名称 [-c 客户端配置]
@@ -470,7 +471,7 @@ func runConnect(args []string) error {
 	fs := flag.NewFlagSet("connect", flag.ExitOnError)
 	opts := targetFlags(fs)
 	server := fs.String("server", "", "服务端地址，如 1.2.3.4:10000")
-	key := fs.String("key", "", "客户端接入密码；首次必填，之后留空表示不修改")
+	key := fs.String("key", "", "客户端接入密码；留空则启动后自动向服务端申请接入")
 	_ = fs.Parse(args)
 
 	if strings.TrimSpace(*server) == "" {

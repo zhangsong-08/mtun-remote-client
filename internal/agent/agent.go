@@ -21,19 +21,22 @@ import (
 // Status 是客户端控制台展示的全部状态，只包含本客户端的规则，
 // 以及与「网络」页相关的、按可见性过滤后的其他节点。
 type Status struct {
-	Version          string           `json:"version"`
-	Node             string           `json:"node"`
-	Server           string           `json:"server"`
-	Dashboard        string           `json:"dashboard"`
-	HasAccess        bool             `json:"has_access"`
-	Connected        bool             `json:"connected"`
-	Error            string           `json:"error,omitempty"`
-	NodeID           string           `json:"node_id,omitempty"`
-	OverlayIP        string           `json:"overlay_ip,omitempty"`
-	Path             string           `json:"path,omitempty"`
-	ConnectedSeconds int64            `json:"connected_seconds"`
-	Rules            []RuleStatus     `json:"rules"`
-	Peers            []proto.PeerNode `json:"peers"`
+	Version          string `json:"version"`
+	Node             string `json:"node"`
+	Server           string `json:"server"`
+	Dashboard        string `json:"dashboard"`
+	HasAccess        bool   `json:"has_access"`
+	Connected        bool   `json:"connected"`
+	Error            string `json:"error,omitempty"`
+	NodeID           string `json:"node_id,omitempty"`
+	OverlayIP        string `json:"overlay_ip,omitempty"`
+	Path             string `json:"path,omitempty"`
+	ConnectedSeconds int64  `json:"connected_seconds"`
+	// JoinPending 表示没有接入密码、已提交申请且正在等待服务端批准。
+	JoinPending bool             `json:"join_pending"`
+	JoinMessage string           `json:"join_message,omitempty"`
+	Rules       []RuleStatus     `json:"rules"`
+	Peers       []proto.PeerNode `json:"peers"`
 }
 
 type RuleStatus struct {
@@ -62,6 +65,8 @@ type Agent struct {
 	statuses   []proto.RuleStatus
 	peers      []proto.PeerNode
 	since      time.Time
+	joinAsked  bool
+	joinMsg    string
 }
 
 func New(cfg *config.Config, cfgPath, joinSecret, version string, log *slog.Logger) *Agent {
@@ -97,10 +102,50 @@ func (a *Agent) Run(ctx context.Context) error {
 			backoff = time.Second
 			continue
 		case token == "":
-			a.setDown("尚未配置接入密码，请在本机控制台添加")
-			if !a.waitRestart(ctx) {
-				return nil
+			// 没有接入密码：走「申请接入」通道，由服务端管理员在面板批准。
+			a.setDown("尚未配置接入密码，正在向服务端申请接入")
+			a.setJoinState(true, "正在向服务端提交接入申请…")
+			pw, reqErr := control.RequestAccess(ctx, server, a.cfg.Node, a.version,
+				func(p proto.JoinPending) {
+					msg := p.Message
+					if msg == "" {
+						msg = "已提交接入申请，等待管理员批准"
+					}
+					a.setJoinState(true, msg)
+				}, a.log)
+			if reqErr != nil {
+				if ctx.Err() != nil {
+					return nil
+				}
+				a.setJoinState(false, "")
+				a.setDown("接入申请未通过：" + reqErr.Error())
+				a.log.Warn("接入申请失败，稍后重试", "err", reqErr)
+				select {
+				case <-ctx.Done():
+					return nil
+				case <-a.restart:
+					backoff = time.Second
+				case <-time.After(30 * time.Second):
+				}
+				continue
 			}
+			seed := secret.Seed(pw)
+			if err := config.SaveJoinSecret(a.cfgPath, seed); err != nil {
+				a.setJoinState(false, "")
+				a.setDown("接入申请已批准，但保存密码失败：" + err.Error())
+				a.log.Warn("保存接入密码失败", "err", err)
+				select {
+				case <-ctx.Done():
+					return nil
+				case <-time.After(10 * time.Second):
+				}
+				continue
+			}
+			a.mu.Lock()
+			a.joinSecret = seed
+			a.mu.Unlock()
+			a.setJoinState(false, "")
+			a.log.Info("接入申请已获批准，正在建立连接")
 			backoff = time.Second
 			continue
 		}
@@ -237,6 +282,14 @@ func (a *Agent) setDown(msg string) {
 	a.peers = nil
 }
 
+// setJoinState 记录「申请接入」进度，供客户端面板展示。
+func (a *Agent) setJoinState(pending bool, msg string) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.joinAsked = pending
+	a.joinMsg = msg
+}
+
 func (a *Agent) waitRestart(ctx context.Context) bool {
 	select {
 	case <-ctx.Done():
@@ -272,9 +325,6 @@ func (a *Agent) SetServer(server, password string) error {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 
-	if password == "" && a.joinSecret == "" {
-		return fmt.Errorf("首次配置必须填写接入密码（由服务端管理员通过终端设置）")
-	}
 	a.cfg.Server = server
 	if password != "" {
 		// 内存与磁盘都只保留哈希，明文密码用完即弃。
@@ -405,18 +455,20 @@ func (a *Agent) Snapshot() Status {
 	defer a.mu.Unlock()
 
 	st := Status{
-		Version:   a.version,
-		Node:      a.cfg.Node,
-		Server:    a.cfg.Server,
-		Dashboard: a.cfg.Dashboard,
-		HasAccess: a.joinSecret != "",
-		Connected: a.up,
-		Error:     a.lastErr,
-		NodeID:    a.self.NodeID,
-		OverlayIP: a.self.OverlayIP,
-		Path:      a.self.Path,
-		Rules:     make([]RuleStatus, 0, len(a.cfg.Publish.Rules)),
-		Peers:     append([]proto.PeerNode(nil), a.peers...),
+		Version:     a.version,
+		Node:        a.cfg.Node,
+		Server:      a.cfg.Server,
+		Dashboard:   a.cfg.Dashboard,
+		HasAccess:   a.joinSecret != "",
+		Connected:   a.up,
+		Error:       a.lastErr,
+		NodeID:      a.self.NodeID,
+		OverlayIP:   a.self.OverlayIP,
+		Path:        a.self.Path,
+		JoinPending: a.joinAsked,
+		JoinMessage: a.joinMsg,
+		Rules:       make([]RuleStatus, 0, len(a.cfg.Publish.Rules)),
+		Peers:       append([]proto.PeerNode(nil), a.peers...),
 	}
 	if st.Peers == nil {
 		st.Peers = []proto.PeerNode{}

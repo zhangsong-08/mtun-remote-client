@@ -43,7 +43,9 @@ type Entry struct {
 type fileData struct {
 	// AllowDefault 用指针区分「字段缺失」与「显式 false」：
 	// 旧版本没有该文件或字段时应当继续允许默认密码。
-	AllowDefault *bool            `json:"allow_default,omitempty"`
+	AllowDefault *bool `json:"allow_default,omitempty"`
+	// AllowRequest 控制是否允许没有密码的客户端提交「申请接入」，默认开启。
+	AllowRequest *bool            `json:"allow_request,omitempty"`
 	Nodes        map[string]Entry `json:"nodes,omitempty"`
 }
 
@@ -52,12 +54,13 @@ type Store struct {
 	mu           sync.Mutex
 	path         string
 	allowDefault bool
+	allowRequest bool
 	nodes        map[string]Entry
 }
 
 // Load 读取节点密码文件。文件不存在或 path 为空时返回空集合，并默认允许默认密码。
 func Load(path string) (*Store, error) {
-	s := &Store{path: path, allowDefault: true, nodes: map[string]Entry{}}
+	s := &Store{path: path, allowDefault: true, allowRequest: true, nodes: map[string]Entry{}}
 	if path == "" {
 		return s, nil
 	}
@@ -74,6 +77,9 @@ func Load(path string) (*Store, error) {
 	}
 	if f.AllowDefault != nil {
 		s.allowDefault = *f.AllowDefault
+	}
+	if f.AllowRequest != nil {
+		s.allowRequest = *f.AllowRequest
 	}
 	if f.Nodes != nil {
 		s.nodes = f.Nodes
@@ -115,6 +121,26 @@ func (s *Store) SetAllowDefault(allow bool) error {
 	s.allowDefault = allow
 	if err := s.saveLocked(); err != nil {
 		s.allowDefault = prev
+		return err
+	}
+	return nil
+}
+
+// AllowRequest 返回是否允许无密码客户端提交接入申请。
+func (s *Store) AllowRequest() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.allowRequest
+}
+
+// SetAllowRequest 切换「允许无密码申请接入」开关。
+func (s *Store) SetAllowRequest(allow bool) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	prev := s.allowRequest
+	s.allowRequest = allow
+	if err := s.saveLocked(); err != nil {
+		s.allowRequest = prev
 		return err
 	}
 	return nil
@@ -263,7 +289,8 @@ func (s *Store) saveLocked() error {
 		return nil
 	}
 	allow := s.allowDefault
-	data, err := json.MarshalIndent(fileData{AllowDefault: &allow, Nodes: s.nodes}, "", "  ")
+	allowReq := s.allowRequest
+	data, err := json.MarshalIndent(fileData{AllowDefault: &allow, AllowRequest: &allowReq, Nodes: s.nodes}, "", "  ")
 	if err != nil {
 		return err
 	}

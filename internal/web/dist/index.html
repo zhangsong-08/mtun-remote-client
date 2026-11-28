@@ -237,6 +237,46 @@
 
         <div class="panel">
           <div class="panel-head">
+            <h2>接入申请</h2>
+            <span class="muted" id="join-count">读取中...</span>
+          </div>
+          <div class="update-row">
+            <span class="muted">开启后，没有接入密码的客户端可提交申请；批准时自动生成该节点的独立密码，并直接下发给客户端</span>
+            <span class="spacer"></span>
+            <label class="inline">
+              <input type="checkbox" id="allow-join-request"> 允许无密码申请接入
+            </label>
+          </div>
+          <div class="toolbar">
+            <button type="button" class="secondary sm" id="join-refresh">立即刷新</button>
+            <span class="muted">停留在本页时每 5 秒自动刷新</span>
+          </div>
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>节点</th>
+                  <th>来源 IP</th>
+                  <th>版本</th>
+                  <th>申请时间</th>
+                  <th>操作</th>
+                </tr>
+              </thead>
+              <tbody id="join-rows"></tbody>
+            </table>
+          </div>
+          <div class="crypto-result" id="join-result" hidden>
+            <span class="muted" id="join-result-label"></span>
+            <div class="crypto-value">
+              <code id="join-password"></code>
+              <button type="button" class="secondary sm" id="join-copy">复制</button>
+            </div>
+          </div>
+          <div class="form-msg" id="join-msg"></div>
+        </div>
+
+        <div class="panel">
+          <div class="panel-head">
             <h2>节点接入密码</h2>
             <span class="muted" id="crypto-node-count"></span>
           </div>
