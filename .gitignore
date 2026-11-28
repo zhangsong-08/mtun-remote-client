@@ -9,6 +9,7 @@ bin/
 .env
 *.passwd
 *.apitoken
+*.webtoken
 *.join
 *.tmp
 configs/join.token

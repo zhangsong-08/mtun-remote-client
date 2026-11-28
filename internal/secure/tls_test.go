@@ -88,6 +88,30 @@ func TestServerConfigForRejectsWhenDefaultDisabled(t *testing.T) {
 	}
 }
 
+func TestRequestChannelHandshake(t *testing.T) {
+	// 申请通道使用公开口令，不依赖任何节点密码。
+	addr, stop := startServer(t, []string{RequestSeed()})
+	defer stop()
+
+	cfg, err := ClientConfig(RequestSeed())
+	if err != nil {
+		t.Fatal(err)
+	}
+	d := &net.Dialer{Timeout: 3 * time.Second}
+	conn, err := tls.DialWithDialer(d, "tcp", addr, cfg)
+	if err != nil {
+		t.Fatalf("申请通道应能握手: %v", err)
+	}
+	state := conn.ConnectionState()
+	_ = conn.Close()
+	if state.ServerName != RequestFingerprint() {
+		t.Fatalf("申请通道 SNI 异常: %q", state.ServerName)
+	}
+	if RequestFingerprint() == TokenFingerprint("") {
+		t.Fatal("申请通道指纹不应与空密码相同")
+	}
+}
+
 func TestTokenFingerprintStableAndDistinct(t *testing.T) {
 	a := TokenFingerprint("password-a")
 	b := TokenFingerprint("password-b")

@@ -25,25 +25,35 @@ $roles = @(
     @{
         Name    = "server"
         Repo    = "zhangsong-08/mtun-remote-server"
+        Remote  = "server"
         Readme  = "README.server.md"
         Exclude = @(
             "README.client.md",
             "scripts/install-client.sh",
             "scripts/install-client.ps1",
             "scripts/start-client.ps1",
-            "configs/client.example.yaml"
+            "scripts/start-client.sh",
+            "scripts/start-client.bat",
+            "scripts/publish-split.ps1",
+            "configs/client.example.yaml",
+            "configs/client.example.yaml.webtoken"
         )
     },
     @{
         Name    = "client"
         Repo    = "zhangsong-08/mtun-remote-client"
+        Remote  = "client"
         Readme  = "README.client.md"
         Exclude = @(
             "README.server.md",
             "scripts/install.sh",
             "scripts/install.ps1",
             "scripts/start-server.ps1",
-            "configs/server.example.yaml"
+            "scripts/start-server.sh",
+            "scripts/start-server.bat",
+            "scripts/publish-split.ps1",
+            "configs/server.example.yaml",
+            "configs/server.example.yaml.webtoken"
         )
     }
 )
@@ -106,7 +116,8 @@ foreach ($role in $roles) {
 
     if ($Push) {
         Write-Host ("    推送到 {0} (main)" -f $role.Repo)
-        Invoke-Git $tree @("push", "https://github.com/$($role.Repo).git", "$($branch):main")
+        # 用已配置的 SSH 远端推送，避免走 HTTPS 时触发交互式凭据输入
+        Invoke-Git $tree @("push", $role.Remote, "$($branch):main")
         Write-Host "    推送完成"
     } else {
         Write-Host "    未推送（加 -Push 生效）"
