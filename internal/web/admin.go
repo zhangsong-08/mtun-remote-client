@@ -435,16 +435,18 @@ func (s *Server) handleNodePassword(w http.ResponseWriter, r *http.Request) {
 
 	switch strings.ToLower(strings.TrimSpace(req.Action)) {
 	case "show":
-		// 只返回是否已设置与更新时间；明文与哈希都不返回。
+		// 密码可随时查看（文件权限 0600，仅服务端本机管理员可见）。
 		entry, ok := s.ctl.NodePassword(node)
 		if !ok {
 			webx.WriteJSON(w, map[string]any{"ok": true, "node": node, "set": false})
 			return
 		}
+		pw, _ := s.ctl.NodePasswordPlain(node)
 		webx.WriteJSON(w, map[string]any{
 			"ok":         true,
 			"node":       node,
 			"set":        true,
+			"password":   pw,
 			"updated_at": entry.UpdatedAt,
 		})
 	case "random":
@@ -538,7 +540,7 @@ func (s *Server) handleJoinRequests(w http.ResponseWriter, r *http.Request) {
 			"ok":       true,
 			"node":     node,
 			"password": pw,
-			"message":  "已批准，密码已下发给该客户端并保存为哈希",
+			"message":  "已批准，密码已下发给该客户端，双方均可随时查看",
 		})
 	case "reject":
 		if id == "" {
@@ -563,6 +565,52 @@ func (s *Server) handleJoinRequests(w http.ResponseWriter, r *http.Request) {
 	default:
 		webx.WriteError(w, http.StatusBadRequest, errors.New("action 只能是 approve/reject/allow"))
 	}
+}
+
+// handlePasswordAlerts 返回「同一接入密码被多台设备使用」的告警。
+// GET 只读；POST 清除指定（或全部）告警，清除属于敏感操作需要 PIN。
+func (s *Server) handlePasswordAlerts(w http.ResponseWriter, r *http.Request) {
+	if s.ctl == nil {
+		webx.WriteError(w, http.StatusInternalServerError, errors.New("控制面未初始化"))
+		return
+	}
+	switch r.Method {
+	case http.MethodGet:
+		webx.WriteJSON(w, map[string]any{"alerts": s.ctl.PasswordAlerts()})
+		return
+	case http.MethodPost:
+	default:
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		return
+	}
+	if !isJSON(r) {
+		webx.WriteError(w, http.StatusUnsupportedMediaType, errors.New("请求需为 application/json"))
+		return
+	}
+	var req struct {
+		PIN string `json:"pin"`
+		Key string `json:"key"`
+		All bool   `json:"all"`
+	}
+	if err := decodeJSONBody(r, &req); err != nil {
+		webx.WriteError(w, http.StatusBadRequest, err)
+		return
+	}
+	if err := s.requirePIN(strings.TrimSpace(req.PIN)); err != nil {
+		s.writePINError(w, err)
+		return
+	}
+	key := strings.TrimSpace(req.Key)
+	if key == "" && !req.All {
+		webx.WriteError(w, http.StatusBadRequest, errors.New("需指定 key，或将 all 设为 true 清除全部"))
+		return
+	}
+	clearKey := key
+	if req.All {
+		clearKey = ""
+	}
+	removed := s.ctl.ClearPasswordAlerts(clearKey)
+	webx.WriteJSON(w, map[string]any{"ok": true, "removed": removed})
 }
 
 // handleDefaultPassword 查询或切换「允许使用默认密码接入」开关。

@@ -301,6 +301,34 @@
 
         <div class="panel">
           <div class="panel-head">
+            <h2>密码复用提醒</h2>
+            <span class="muted" id="alert-count">读取中...</span>
+          </div>
+          <div class="update-row">
+            <span class="muted">多台设备使用同一接入密码时在此提示，相关客户端不会下线；若新设备未上报规则，原节点的转发规则会自动同步过去</span>
+            <span class="spacer"></span>
+            <button type="button" class="secondary sm" id="alert-clear-all">清空全部</button>
+          </div>
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>密码所属节点</th>
+                  <th>使用设备</th>
+                  <th>次数</th>
+                  <th>最近时间</th>
+                  <th>已同步规则</th>
+                  <th>操作</th>
+                </tr>
+              </thead>
+              <tbody id="alert-rows"></tbody>
+            </table>
+          </div>
+          <div class="form-msg" id="alert-msg"></div>
+        </div>
+
+        <div class="panel">
+          <div class="panel-head">
             <h2>设置接入密码</h2>
             <span class="muted" id="crypto-target-label">请选择节点</span>
           </div>
@@ -316,7 +344,7 @@
               <button type="button" class="secondary" id="c-clear">清除该节点密码</button>
             </div>
             <div class="crypto-result" id="crypto-result" hidden>
-              <span class="muted">新密码（仅显示这一次，请立即复制）</span>
+              <span class="muted">当前接入密码（可随时查看，次数不限）</span>
               <div class="crypto-value">
                 <input id="c-result-value" readonly class="mono">
                 <button type="button" class="secondary sm" id="c-copy">复制</button>

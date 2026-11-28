@@ -398,10 +398,19 @@ function renderCryptoNodes() {
     tr.appendChild(cell(node.has_password ? fmtTime(node.password_updated_at) : "-"));
 
     const opTd = document.createElement("td");
+    if (node.has_password) {
+      const view = document.createElement("button");
+      view.type = "button";
+      view.className = "btn-link";
+      view.textContent = "查看密码";
+      view.addEventListener("click", () => viewCryptoPassword(node.id));
+      opTd.appendChild(view);
+    }
     const pick = document.createElement("button");
     pick.type = "button";
     pick.className = "btn-link";
     pick.textContent = "选择";
+    pick.style.marginLeft = node.has_password ? "8px" : "0";
     pick.addEventListener("click", () => selectCryptoNode(node.id));
     opTd.appendChild(pick);
     tr.appendChild(opTd);
@@ -426,6 +435,24 @@ async function cryptoNodeAction(action, password) {
   }
 }
 
+// viewCryptoPassword 让管理员随时查看某节点的接入密码（次数不限，需 PIN）。
+async function viewCryptoPassword(nodeID) {
+  const pin = cryptoPIN();
+  if (!pin) return;
+  try {
+    const data = await postJSON("/api/nodes/password", { pin, node: nodeID, action: "show" });
+    if (!data.set) {
+      setMsg("crypto-msg", `节点「${nodeID}」尚未设置独立密码，当前使用默认密码`);
+      return;
+    }
+    selectCryptoNode(nodeID);
+    showCryptoResult(data.password);
+    setMsg("crypto-msg", `已显示节点「${nodeID}」的接入密码，可随时再次查看`, true);
+  } catch (err) {
+    setMsg("crypto-msg", err.message);
+  }
+}
+
 async function submitCryptoPassword(event) {
   event.preventDefault();
   const password = $("c-password").value.trim();
@@ -434,10 +461,10 @@ async function submitCryptoPassword(event) {
   $("c-password").value = "";
   if (data.password) {
     showCryptoResult(data.password);
-    setMsg("crypto-msg", "已生成随机密码，请立即复制；离开本页后无法再次查看", true);
+    setMsg("crypto-msg", "已生成随机密码；该密码可随时在本页查看", true);
   } else {
     hideCryptoResult();
-    setMsg("crypto-msg", "已保存，节点下次连接时生效", true);
+    setMsg("crypto-msg", "已保存，节点下次连接时生效，可随时查看", true);
   }
   await refresh();
 }
@@ -590,6 +617,67 @@ async function copyJoinResult() {
     setMsg("join-msg", "密码已复制", true);
   } catch (_) {
     setMsg("join-msg", "复制失败，请手动选中复制");
+  }
+}
+
+async function loadPasswordAlerts() {
+  try {
+    const data = await getJSON("/api/password/alerts");
+    renderAlertRows(data.alerts || []);
+  } catch (_) {
+    /* 忽略：下次刷新重试 */
+  }
+}
+
+function renderAlertRows(list) {
+  const tbody = $("alert-rows");
+  tbody.textContent = "";
+  $("alert-count").textContent = list.length ? `${list.length} 条复用提醒` : "暂无复用提醒";
+  if (!list.length) {
+    emptyRow(tbody, 6, "暂未发现多设备共用同一密码");
+    return;
+  }
+  for (const a of list) {
+    const tr = document.createElement("tr");
+    tr.appendChild(cell(a.owner));
+    tr.appendChild(cell(a.used_by));
+    tr.appendChild(cell(String(a.count || 0)));
+    tr.appendChild(cell(fmtTime(a.last_at)));
+    tr.appendChild(cell(a.synced_rules ? `${a.synced_rules} 条` : "-"));
+    const opTd = document.createElement("td");
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "btn-link";
+    btn.textContent = "清除";
+    btn.addEventListener("click", () => clearPasswordAlert(a.key));
+    opTd.appendChild(btn);
+    tr.appendChild(opTd);
+    tbody.appendChild(tr);
+  }
+}
+
+async function clearPasswordAlert(key) {
+  const pin = cryptoPIN();
+  if (!pin) return;
+  try {
+    await postJSON("/api/password/alerts", { pin, key });
+    setMsg("alert-msg", "已清除该提醒", true);
+    await loadPasswordAlerts();
+  } catch (err) {
+    setMsg("alert-msg", err.message);
+  }
+}
+
+async function clearAllPasswordAlerts() {
+  const pin = cryptoPIN();
+  if (!pin) return;
+  if (!confirm("确定清空全部密码复用提醒？提醒只影响展示，不影响任何客户端连接。")) return;
+  try {
+    const data = await postJSON("/api/password/alerts", { pin, all: true });
+    setMsg("alert-msg", `已清空 ${data.removed || 0} 条提醒`, true);
+    await loadPasswordAlerts();
+  } catch (err) {
+    setMsg("alert-msg", err.message);
   }
 }
 
@@ -1131,6 +1219,7 @@ function navigate() {
     renderCryptoSelect();
     loadDefaultPassword();
     loadJoinRequests();
+    loadPasswordAlerts();
   }
   if (page === "panel") {
     loadPanel();
@@ -1160,6 +1249,7 @@ async function refresh() {
   const activeNav = document.querySelector(".nav a.active");
   if (activeNav && activeNav.dataset.page === "crypto") {
     loadJoinRequests();
+    loadPasswordAlerts();
   }
   if (failed.length === results.length) {
     $("uptime").textContent = "控制台连接中断";
@@ -1209,6 +1299,7 @@ $("crypto-search").addEventListener("input", (e) => {
 $("allow-default-password").addEventListener("change", toggleDefaultPassword);
 $("allow-join-request").addEventListener("change", toggleJoinRequest);
 $("join-refresh").addEventListener("click", loadJoinRequests);
+$("alert-clear-all").addEventListener("click", clearAllPasswordAlerts);
 $("join-copy").addEventListener("click", copyJoinResult);
 document.querySelectorAll("dialog [data-close]").forEach((btn) => {
   btn.addEventListener("click", () => btn.closest("dialog").close());

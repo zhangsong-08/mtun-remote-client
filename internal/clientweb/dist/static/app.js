@@ -366,6 +366,42 @@ $("server-form").addEventListener("submit", async (event) => {
   }
 });
 
+// showAccessPassword 查看本机保存的接入密码（服务端批准后自动写入，可反复查看）。
+async function showAccessPassword() {
+  const button = $("btn-show-access");
+  button.disabled = true;
+  try {
+    const data = await getJSON("/api/access");
+    if (!data.password) {
+      $("access-result").hidden = true;
+      setMsg(
+        "server-msg",
+        data.join_pending ? "接入申请待服务端批准，批准后会自动分配密码" : "尚未保存接入密码，可留空密码向服务端申请"
+      );
+      return;
+    }
+    $("access-password").value = data.password;
+    $("access-result").hidden = false;
+    setMsg("server-msg", "已显示当前接入密码", true);
+  } catch (err) {
+    setMsg("server-msg", err.message);
+  } finally {
+    button.disabled = false;
+  }
+}
+
+async function copyAccessPassword() {
+  const value = $("access-password").value;
+  if (!value) return;
+  try {
+    await navigator.clipboard.writeText(value);
+    setMsg("server-msg", "密码已复制", true);
+  } catch (_) {
+    $("access-password").select();
+    setMsg("server-msg", "浏览器未授予剪贴板权限，请手动复制");
+  }
+}
+
 $("rule-form").addEventListener("submit", async (event) => {
   event.preventDefault();
   const button = event.target.querySelector("button");
@@ -549,6 +585,8 @@ $("r-visibility").addEventListener("change", (e) => {
 $("btn-check").addEventListener("click", loadUpdate);
 $("btn-update").addEventListener("click", applyUpdate);
 $("btn-autostart").addEventListener("click", toggleAutostart);
+$("btn-show-access").addEventListener("click", showAccessPassword);
+$("access-copy").addEventListener("click", copyAccessPassword);
 window.addEventListener("hashchange", navigate);
 
 navigate();

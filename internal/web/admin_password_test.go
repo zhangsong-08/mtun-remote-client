@@ -73,17 +73,19 @@ func TestNodePasswordRandomSetShowClear(t *testing.T) {
 		t.Fatalf("随机密码异常: %v", body)
 	}
 
-	// 查看现有：只返回是否已设置，不再返回密码。
-	rec = postJSON(t, s.handleNodePassword, `{"pin":"123456","node":"n1","action":"show"}`)
-	if rec.Code != http.StatusOK {
-		t.Fatalf("查看失败: %d", rec.Code)
-	}
-	shown := decodeBody(t, rec)
-	if shown["set"] != true {
-		t.Fatalf("应标记为已设置: %v", shown)
-	}
-	if _, hasPassword := shown["password"]; hasPassword {
-		t.Fatal("show 不应再返回密码（明文或哈希）")
+	// 查看现有：可反复查看同一明文密码（次数不限）。
+	for i := 0; i < 2; i++ {
+		rec = postJSON(t, s.handleNodePassword, `{"pin":"123456","node":"n1","action":"show"}`)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("查看失败: %d", rec.Code)
+		}
+		shown := decodeBody(t, rec)
+		if shown["set"] != true {
+			t.Fatalf("应标记为已设置: %v", shown)
+		}
+		if shown["password"] != pw {
+			t.Fatalf("show 应返回与随机生成一致的密码: %v", shown["password"])
+		}
 	}
 
 	// 已设置 → 节点视图应标记 has_password。
@@ -120,6 +122,39 @@ func TestNodePasswordWrongPIN(t *testing.T) {
 	rec := postJSON(t, s.handleNodePassword, `{"pin":"000000","node":"n1","action":"random"}`)
 	if rec.Code != http.StatusUnauthorized {
 		t.Fatalf("错误 PIN 应返回 401，得到 %d", rec.Code)
+	}
+}
+
+func TestPasswordAlertsListAndClear(t *testing.T) {
+	s := newPasswordTestServer(t)
+	if err := webx.SetPINFile(s.pinPath(), "123456"); err != nil {
+		t.Fatal(err)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	rec := httptest.NewRecorder()
+	s.handlePasswordAlerts(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET 失败: %d %s", rec.Code, rec.Body.String())
+	}
+	if body := decodeBody(t, rec); body["alerts"] == nil {
+		t.Fatalf("应返回空数组而不是 null: %v", body)
+	}
+
+	// 未指定 key 且未要求清空全部 → 400。
+	rec = postJSON(t, s.handlePasswordAlerts, `{"pin":"123456"}`)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("缺少 key 应返回 400，得到 %d", rec.Code)
+	}
+	// 错误 PIN → 401。
+	rec = postJSON(t, s.handlePasswordAlerts, `{"pin":"000000","key":"abc"}`)
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("错误 PIN 应返回 401，得到 %d", rec.Code)
+	}
+	// 清空全部。
+	rec = postJSON(t, s.handlePasswordAlerts, `{"pin":"123456","all":true}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("清空失败: %d %s", rec.Code, rec.Body.String())
 	}
 }
 

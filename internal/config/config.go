@@ -223,7 +223,25 @@ func SaveJoinPassword(cfgPath, password string) error {
 	if err := ValidateJoinPassword(password); err != nil {
 		return err
 	}
-	return writeJoinSecret(JoinPasswordPath(cfgPath), secret.Seed(password))
+	if err := writeJoinSecret(JoinPasswordPath(cfgPath), secret.Seed(password)); err != nil {
+		return err
+	}
+	// 明文另存 0600，仅用于本机控制台「查看密码」；握手校验始终使用 .join 里的哈希。
+	return os.WriteFile(JoinPlainPath(cfgPath), []byte(password+"\n"), 0o600)
+}
+
+// LoadJoinPlain 读取本机保存的接入密码明文（可能不存在，例如由随机哈希迁移来的配置）。
+func LoadJoinPlain(cfgPath string) string {
+	data, err := os.ReadFile(JoinPlainPath(cfgPath))
+	if err != nil {
+		return ""
+	}
+	return cleanPassword(string(data))
+}
+
+// JoinPlainPath 是接入密码明文文件路径（0600，仅本机可读）。
+func JoinPlainPath(cfgPath string) string {
+	return cfgPath + ".joinplain"
 }
 
 // SaveJoinSecret 直接保存已经计算好的 seed（例如随机生成密码后只保留哈希）。

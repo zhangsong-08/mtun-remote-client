@@ -11,6 +11,9 @@ bin/
 *.apitoken
 *.webtoken
 *.join
+*.joinplain
+*.nodepass.json
+*.pin
 *.tmp
 configs/join.token
 logs/

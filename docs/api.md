@@ -585,13 +585,13 @@ Invoke-RestMethod -Uri "$base/api/status" -Headers $h
 
   | 取值 | 说明 | 返回 |
   | --- | --- | --- |
-  | `show` | 查看该节点是否已设置密码 | `{"ok":true,"node":"PC-1","set":true,"updated_at":"..."}`（不返回密码） |
+  | `show` | 查看该节点的接入密码（可反复查看，不限次数） | `{"ok":true,"node":"PC-1","set":true,"password":"...","updated_at":"..."}`；未设置时 `{"set":false}` |
   | `random` | 随机生成 32 位密码并保存 | `{"ok":true,"node":"PC-1","set":true,"password":"...","updated_at":"..."}` |
   | `set` | 使用 `password` 字段指定密码（≥8 位） | `{"ok":true,"node":"PC-1","set":true,"updated_at":"..."}` |
   | `clear` | 删除独立密码，回落到默认密码策略 | `{"ok":true,"node":"PC-1","set":false}` |
 
-  密码只在 `random` 的响应中出现一次，之后无法再次查看。
-  服务端磁盘上的 `<配置>.nodepass.json` 只保存密码的本地哈希（PBKDF2-SHA256），不保存明文。
+  为支持「随时查看」，`<配置>.nodepass.json`（0600）同时保存密码哈希（PBKDF2-SHA256，握手校验用）
+  与明文；该文件只在服务端本机可读，泄露等同于泄露节点接入密码。
 
 - `GET /api/nodes/password/default` → `{"allow_default":true|false}`（无需 PIN）。
 - `POST /api/nodes/password/default`（必须携带 PIN）→ `{"pin":"123456","allow":false}`。
@@ -672,11 +672,12 @@ Invoke-RestMethod -Uri "$base/api/status" -Headers $h
 - `<配置>.passwd`：管理密码哈希，删除后需重新设置。
 - `<配置>.apitoken`：API Token，自动生成，勿泄露。
 - `<配置>.join`：接入密码的本地哈希（服务端为权威值，客户端为副本）。
-  旧版明文文件在首次启动时自动迁移为哈希，之后磁盘上不再出现明文密码。
+  旧版明文文件在首次启动时自动迁移为哈希。
+- `<client.yaml>.joinplain`：客户端保存的接入密码明文（0600），仅用于本机控制台「查看当前密码」。
 - `<配置>.pin`：服务端敏感操作 PIN 哈希（仅服务端）。
 - `<server.yaml>.access.json`：节点访问策略（封禁、时段、IP 段、系统）。
 - `<server.yaml>.rules.json`：离线节点的待同步规则操作。
-- `<server.yaml>.nodepass.json`：每节点独立接入密码（只存哈希）与默认密码开关。
+- `<server.yaml>.nodepass.json`：每节点独立接入密码（哈希 + 明文，0600）、默认密码与申请接入开关。
 
 ---
 
@@ -740,7 +741,7 @@ POST 请求补上 `Content-Type: application/json`。
 
 - **申请通道**：客户端使用公开的申请口令完成 TLS 握手（该口令不授予任何节点权限），随后发送 `join_request`。
 - **服务端登记**：申请进入内存队列，保留 10 分钟；同一来源 IP最多 3 条待处理，同一节点重复申请复用原记录。
-- **批准**：服务端为该节点生成 32 位随机独立密码，保存为哈希（`<配置>.nodepass.json`），并通过当前申请连接一次性下发；明文同时显示在面板上一次。
+- **批准**：服务端为该节点生成 32 位随机独立密码（哈希 + 明文保存在 `<配置>.nodepass.json`），通过当前申请连接下发，双方之后都能随时查看。
 - **拒绝**：客户端收到拒绝原因，30 秒后自动重试（可在服务端关闭申请开关）。
 - **关闭申请**：`allow_request=false` 时，申请通道会直接返回错误，客户端必须使用密码接入。
 
@@ -774,11 +775,38 @@ POST（需要 `pin`）：
 
 | action | 参数 | 说明 |
 | --- | --- | --- |
-| `approve` | `id` | 批准申请，返回 `{ok,node,password}`，密码仅此一次 |
+| `approve` | `id` | 批准申请，返回 `{ok,node,password}`，密码可在「加密」页随时再次查看 |
 | `reject` | `id`、`reason` | 拒绝申请 |
 | `allow` | `allow` | 切换「允许无密码申请接入」开关 |
 
 批准时生成的密码会同时写入该节点的独立密码记录，因此该节点后续只能使用新密码接入。
+
+客户端侧：
+
+- `POST /api/server` 的 `key` 可留空——留空即向服务端申请接入，批准后自动保存密码并重连。
+- `GET /api/access` 返回本机保存的接入密码明文、服务端地址与是否待批准状态，供控制台「查看当前密码」使用（次数不限）。
+
+### 11.1 同一密码多设备使用
+
+不同设备使用同一个节点独立密码接入时：
+
+- **不下线**任何一方，各自保持正常连接；
+- 服务端记录「密码所属节点 / 使用设备 / 次数 / 时间」，并写 `Warn` 级日志；
+- 新设备注册时若未上报转发规则，服务端把原节点的规则通过 `rules_sync` 下发，实现换设备后配置自动同步（判断依据只有接入密码）。
+
+告警接口：
+
+```http
+GET  /api/password/alerts          # 列表，无需 PIN
+POST /api/password/alerts          # 清除，需要 PIN
+```
+
+```json
+GET  → {"alerts":[{"key":"9f2c1a3b4d5e","owner":"office-pc","used_by":"laptop",
+                   "count":2,"first_at":"...","last_at":"...","synced_rules":3}]}
+POST → {"pin":"123456","key":"9f2c1a3b4d5e"}   // 清除单条
+POST → {"pin":"123456","all":true}             // 清空全部
+```
 
 ---
 

@@ -265,6 +265,47 @@ func (m *Manager) RuleSpecs(id string) []proto.PublishRule {
 	return append([]proto.PublishRule(nil), n.specs...)
 }
 
+// DropConflicts 关闭 owners 中任一节点上与 incoming 端口冲突的规则监听。
+// 用于「同一接入密码换设备」：新设备接管公网端口，原设备保持连接不踢下线。
+// 返回被关闭的规则数量。
+func (m *Manager) DropConflicts(owners []string, incoming []proto.PublishRule) int {
+	if len(owners) == 0 || len(incoming) == 0 {
+		return 0
+	}
+	want := make(map[int]struct{}, len(incoming))
+	for _, r := range incoming {
+		want[r.Listen] = struct{}{}
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	dropped := 0
+	for _, owner := range owners {
+		n, ok := m.nodes[owner]
+		if !ok {
+			continue
+		}
+		for name, r := range n.rules {
+			if _, hit := want[r.spec.Listen]; !hit {
+				continue
+			}
+			if r.ln != nil {
+				_ = r.ln.Close()
+			}
+			delete(n.rules, name)
+			dropped++
+		}
+		kept := make([]proto.PublishRule, 0, len(n.specs))
+		for _, sp := range n.specs {
+			if _, hit := want[sp.Listen]; hit {
+				continue
+			}
+			kept = append(kept, sp)
+		}
+		n.specs = kept
+	}
+	return dropped
+}
+
 // Remove 只在会话仍是当前会话时清理，避免旧连接误删新连接。
 func (m *Manager) Remove(id string, sess *yamux.Session) {
 	m.mu.Lock()

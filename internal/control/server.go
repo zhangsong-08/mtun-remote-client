@@ -47,6 +47,11 @@ type Server struct {
 	// joinMu 保护待批准的接入申请队列（仅内存，重连后需重新申请）。
 	joinMu   sync.Mutex
 	joinReqs map[string]*joinTicket
+
+	// auditMu 保护「同一密码被多台设备使用」的检测与告警。
+	auditMu  sync.Mutex
+	seedUses map[string]map[string]time.Time
+	alerts   map[string]*passwordAlert
 }
 
 // clientConn 封装单个节点的控制流写入，避免状态回执与 peers 推送并发写同一编码器。
@@ -73,6 +78,8 @@ func NewServer(addr, token, cfgPath string, reg *state.Registry, tunnels *tunnel
 		log:      log,
 		conns:    map[string]*clientConn{},
 		joinReqs: map[string]*joinTicket{},
+		seedUses: map[string]map[string]time.Time{},
+		alerts:   map[string]*passwordAlert{},
 	}
 	if cfgPath != "" {
 		accessPath := cfgPath + ".access.json"
@@ -267,6 +274,20 @@ func (s *Server) handle(ctx context.Context, conn net.Conn) {
 				Publish:   rules,
 				Now:       time.Now(),
 			})
+			// 同一接入密码换设备时，新设备接管冲突的公网端口（原设备保持在线）。
+			// 只对「节点独立密码」生效，共享的默认密码不允许互相抢占端口。
+			if len(rules) > 0 && s.passwords.OwnerOfSeed(usedToken) != "" {
+				if owners := s.devicesForSeed(usedToken, msg.NodeID); len(owners) > 0 {
+					if n := s.tunnels.DropConflicts(owners, rules); n > 0 {
+						s.log.Info("新设备接管公网端口", "node", msg.NodeID, "from", owners, "ports", n)
+						for _, owner := range owners {
+							if oc := s.connFor(owner); oc != nil {
+								_ = s.sendStatus(oc, owner, s.tunnels.Statuses(owner))
+							}
+						}
+					}
+				}
+			}
 			statuses, err := s.tunnels.Register(msg.NodeID, sess, rules)
 			if err != nil {
 				s.log.Warn("register rejected", "node", msg.NodeID, "from", remote, "err", err)
@@ -282,6 +303,31 @@ func (s *Server) handle(ctx context.Context, conn net.Conn) {
 				if err := cc.send(proto.TypeRulesSync, proto.RulesSync{Rules: rules}); err != nil {
 					return
 				}
+			}
+			if reused, owner, sync := s.noteSeedUse(usedToken, msg.NodeID, msg.Publish); reused && len(sync) > 0 {
+				// 同一密码换设备接入：把原节点的转发规则同步给新设备（双方都保持在线）。
+				// 原设备若仍占用这些公网端口，先让给新设备。
+				others := s.devicesForSeed(usedToken, msg.NodeID)
+				if across := s.tunnels.DropConflicts(others, sync); across > 0 {
+					// 其他设备仍在线：同步告诉它们这些端口已被新设备接管。
+					for _, other := range others {
+						if oc := s.connFor(other); oc != nil {
+							_ = s.sendStatus(oc, other, s.tunnels.Statuses(other))
+						}
+					}
+				}
+				if statuses, err := s.tunnels.ApplyRules(msg.NodeID, sync); err != nil {
+					s.log.Warn("按接入密码同步规则失败", "node", msg.NodeID, "err", err)
+				} else {
+					_ = s.sendStatus(cc, msg.NodeID, statuses)
+					if err := s.reg.SetPublish(msg.NodeID, sync); err != nil {
+						s.log.Warn("更新节点规则快照失败", "node", msg.NodeID, "err", err)
+					}
+				}
+				if err := cc.send(proto.TypeRulesSync, proto.RulesSync{Rules: sync}); err != nil {
+					return
+				}
+				s.log.Info("已按接入密码同步原节点配置", "owner", owner, "node", msg.NodeID, "rules", len(sync))
 			}
 			s.broadcastPeers()
 

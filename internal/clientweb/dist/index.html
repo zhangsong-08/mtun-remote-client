@@ -83,6 +83,17 @@
             </label>
             <button type="submit">保存并重连</button>
           </form>
+          <div class="update-row">
+            <span class="muted" id="access-detail">接入密码由服务端分配，可随时查看</span>
+            <span class="spacer"></span>
+            <button type="button" class="secondary" id="btn-show-access">查看当前密码</button>
+          </div>
+          <div class="form-grid" id="access-result" hidden>
+            <label>当前接入密码（可随时查看，次数不限）
+              <input id="access-password" class="mono" readonly>
+            </label>
+            <button type="button" class="secondary" id="access-copy">复制密码</button>
+          </div>
           <div class="form-msg" id="server-msg"></div>
         </div>
       </section>

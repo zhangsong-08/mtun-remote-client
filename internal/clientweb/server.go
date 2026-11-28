@@ -19,6 +19,7 @@ import (
 
 	"mtun/internal/agent"
 	"mtun/internal/autostart"
+	"mtun/internal/config"
 	"mtun/internal/selfupdate"
 	"mtun/internal/webx"
 	"mtun/pkg/proto"
@@ -79,6 +80,7 @@ func (s *Server) Run(ctx context.Context) error {
 func (s *Server) handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/api/status", s.handleStatus)
+	mux.HandleFunc("/api/access", s.handleAccess)
 	mux.HandleFunc("/api/server", s.handleServer)
 	mux.HandleFunc("/api/rules", s.handleRule)
 	mux.HandleFunc("/api/rules/delete", s.handleDeleteRule)
@@ -216,6 +218,24 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	webx.WriteJSON(w, s.ag.Snapshot())
+}
+
+// handleAccess 返回本机保存的接入密码明文，供客户端随时查看（次数不限）。
+// 该接口与本机控制台同源，已由 webx.Auth 校验登录密码。
+func (s *Server) handleAccess(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		return
+	}
+	snap := s.ag.Snapshot()
+	webx.WriteJSON(w, map[string]any{
+		"server":       snap.Server,
+		"node":         snap.Node,
+		"password":     config.LoadJoinPlain(s.cfgPath),
+		"has_password": snap.HasAccess,
+		"join_pending": snap.JoinPending,
+		"join_message": snap.JoinMessage,
+	})
 }
 
 type serverReq struct {

@@ -140,6 +140,7 @@ func (s *Server) handler() http.Handler {
 	mux.HandleFunc("/api/nodes/password", s.handleNodePassword)
 	mux.HandleFunc("/api/nodes/password/default", s.handleDefaultPassword)
 	mux.HandleFunc("/api/join/requests", s.handleJoinRequests)
+	mux.HandleFunc("/api/password/alerts", s.handlePasswordAlerts)
 	mux.HandleFunc("/api/rules/visibility", s.handleRuleVisibility)
 	mux.HandleFunc("/api/system", s.handleSystem)
 	mux.HandleFunc("/api/panel", s.handlePanel)

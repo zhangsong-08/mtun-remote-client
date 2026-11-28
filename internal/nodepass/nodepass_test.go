@@ -7,6 +7,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -26,7 +27,7 @@ func TestLoadEmptyAllowsDefault(t *testing.T) {
 	}
 }
 
-func TestSetRandomStoresOnlySeed(t *testing.T) {
+func TestSetRandomStoresSeedAndPlaintext(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "cfg.nodepass.json")
 	s, err := Load(path)
 	if err != nil {
@@ -41,13 +42,26 @@ func TestSetRandomStoresOnlySeed(t *testing.T) {
 		t.Fatalf("随机密码过短: %q", pw)
 	}
 	if entry.Seed == pw || strings.Contains(entry.Seed, pw) {
-		t.Fatal("记录中不应保存明文密码")
+		t.Fatal("seed 字段不应包含明文密码")
 	}
 	if entry.Seed != secret.Seed(pw) {
 		t.Fatal("记录应保存密码的本地哈希")
 	}
 	if !secret.IsSeed(entry.Seed) {
 		t.Fatalf("seed 格式异常: %q", entry.Seed)
+	}
+	// 明文单独保存，供管理员与节点所有者随时查看（不限次数）。
+	if entry.Password != pw {
+		t.Fatalf("记录应保留明文供查看: %q", entry.Password)
+	}
+	if got, ok := s.Password("node-a"); !ok || got != pw {
+		t.Fatalf("Password(node-a) = %q, %v", got, ok)
+	}
+	if owner := s.OwnerOfSeed(entry.Seed); owner != "node-a" {
+		t.Fatalf("OwnerOfSeed = %q, want node-a", owner)
+	}
+	if owner := s.OwnerOfSeed(secret.Seed("default-shared-pass")); owner != "" {
+		t.Fatalf("默认密码不应归属任何节点，得到 %q", owner)
 	}
 
 	pwB, entryB, err := s.SetRandom("node-b")
@@ -71,7 +85,7 @@ func TestSetRandomStoresOnlySeed(t *testing.T) {
 		{"节点密码错误用默认", "node-a", defSeed, ErrPasswordMismatch},
 		{"节点密码错误用别的节点", "node-a", entryB.Seed, ErrPasswordMismatch},
 		{"无独立密码用默认", "node-c", defSeed, nil},
-		{"无独立密码用节点密码", "node-c", entry.Seed, ErrPasswordMismatch},
+		{"无独立密码复用其他节点密码", "node-c", entry.Seed, nil},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -92,15 +106,23 @@ func TestSetRandomStoresOnlySeed(t *testing.T) {
 	if err := s.Authorize("node-a", secret.Seed(pw), defSeed); err != nil {
 		t.Fatalf("独立密码节点应仍可接入: %v", err)
 	}
-
-	// 落盘内容不得包含明文。
-	raw, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatalf("读取文件: %v", err)
+	// 关闭默认密码后，仍允许其他设备复用某个节点的独立密码（换设备场景）。
+	if err := s.Authorize("node-c", entry.Seed, defSeed); err != nil {
+		t.Fatalf("换设备复用节点密码应被允许: %v", err)
 	}
-	for _, plain := range []string{pw, pwB, def} {
-		if strings.Contains(string(raw), plain) {
-			t.Fatalf("文件中出现了明文密码 %q", plain)
+	if err := s.Authorize("node-c", secret.Seed("unknown-password"), defSeed); !errors.Is(err, ErrDefaultDisabled) {
+		t.Fatalf("未知密码在关闭默认密码后应被拒绝: %v", err)
+	}
+
+	// 文件中保留可读密码，因此在类 Unix 系统上必须只有本机可读。
+	// Windows 只支持只读位，os.Chmod(0600) 会退化为 0666，故跳过该断言。
+	if runtime.GOOS != "windows" {
+		info, err := os.Stat(path)
+		if err != nil {
+			t.Fatalf("读取文件: %v", err)
+		}
+		if perm := info.Mode().Perm(); perm != 0o600 {
+			t.Fatalf("密码文件权限应为 0600，得到 %o", perm)
 		}
 	}
 
@@ -115,6 +137,9 @@ func TestSetRandomStoresOnlySeed(t *testing.T) {
 	got, ok := reloaded.Get("node-a")
 	if !ok || got.Seed != entry.Seed {
 		t.Fatalf("节点密码未正确持久化: %+v", got)
+	}
+	if got.Password != pw {
+		t.Fatalf("重新加载后应仍可查看明文: %q", got.Password)
 	}
 }
 

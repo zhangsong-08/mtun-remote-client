@@ -129,8 +129,8 @@ func (a *Agent) Run(ctx context.Context) error {
 				}
 				continue
 			}
-			seed := secret.Seed(pw)
-			if err := config.SaveJoinSecret(a.cfgPath, seed); err != nil {
+			// 同时保存哈希（握手用）与明文（本机控制台可随时查看）。
+			if err := config.SaveJoinPassword(a.cfgPath, pw); err != nil {
 				a.setJoinState(false, "")
 				a.setDown("接入申请已批准，但保存密码失败：" + err.Error())
 				a.log.Warn("保存接入密码失败", "err", err)
@@ -142,7 +142,7 @@ func (a *Agent) Run(ctx context.Context) error {
 				continue
 			}
 			a.mu.Lock()
-			a.joinSecret = seed
+			a.joinSecret = secret.Seed(pw)
 			a.mu.Unlock()
 			a.setJoinState(false, "")
 			a.log.Info("接入申请已获批准，正在建立连接")
@@ -327,14 +327,14 @@ func (a *Agent) SetServer(server, password string) error {
 
 	a.cfg.Server = server
 	if password != "" {
-		// 内存与磁盘都只保留哈希，明文密码用完即弃。
 		a.joinSecret = secret.Seed(password)
 	}
 	if err := config.Save(a.cfgPath, a.cfg); err != nil {
 		return err
 	}
 	if password != "" {
-		if err := config.SaveJoinSecret(a.cfgPath, a.joinSecret); err != nil {
+		// 哈希用于握手，明文写入 <配置>.joinplain（0600）供本机控制台查看。
+		if err := config.SaveJoinPassword(a.cfgPath, password); err != nil {
 			return err
 		}
 	}

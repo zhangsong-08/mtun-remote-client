@@ -34,9 +34,11 @@ var (
 	ErrDefaultDisabled = errors.New("该节点需要专属接入密码，请联系管理员获取")
 )
 
-// Entry 是单个节点的独立接入密码记录，只保存哈希。
+// Entry 是单个节点的独立接入密码记录。
+// Seed 用于握手校验；Password 仅供管理员与节点所有者查看（文件权限 0600）。
 type Entry struct {
 	Seed      string    `json:"seed"`
+	Password  string    `json:"password,omitempty"`
 	UpdatedAt time.Time `json:"updated_at"`
 }
 
@@ -106,6 +108,24 @@ func (s *Store) List() map[string]Entry {
 	return out
 }
 
+// Password 返回节点独立接入密码的明文（仅用于本地控制台查看）。
+func (s *Store) Password(nodeID string) (string, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	e, ok := s.nodes[strings.TrimSpace(nodeID)]
+	if !ok || e.Password == "" {
+		return "", false
+	}
+	return e.Password, true
+}
+
+// OwnerOfSeed 返回该密码哈希所属的节点 ID；不属于任何节点独立密码时返回空。
+func (s *Store) OwnerOfSeed(seed string) string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.ownerOfSeedLocked(seed)
+}
+
 // AllowDefault 返回是否允许未设置独立密码的节点使用默认密码接入。
 func (s *Store) AllowDefault() bool {
 	s.mu.Lock()
@@ -155,11 +175,11 @@ func (s *Store) Set(nodeID, password string) (Entry, error) {
 	if err := ValidatePassword(password); err != nil {
 		return Entry{}, err
 	}
-	return s.setSeed(nodeID, secret.Seed(password))
+	return s.setEntry(nodeID, secret.Seed(password), password)
 }
 
-// SetRandom 为节点生成一个随机接入密码并保存其哈希。
-// 返回的明文密码只在此刻出现一次，之后无法还原。
+// SetRandom 为节点生成一个随机接入密码并保存。
+// 密码同时保留哈希（用于握手）与明文（供管理员/节点所有者随时查看）。
 func (s *Store) SetRandom(nodeID string) (string, Entry, error) {
 	pw, err := Generate()
 	if err != nil {
@@ -227,9 +247,9 @@ func (s *Store) Authorize(nodeID, usedSeed, defaultSeed string) error {
 		return errors.New("缺少节点 ID")
 	}
 	s.mu.Lock()
+	defer s.mu.Unlock()
 	entry, has := s.nodes[nodeID]
 	allowDefault := s.allowDefault
-	s.mu.Unlock()
 
 	if has {
 		// 有独立密码时必须以它为准，忽略默认密码开关。
@@ -238,13 +258,27 @@ func (s *Store) Authorize(nodeID, usedSeed, defaultSeed string) error {
 		}
 		return nil
 	}
+	if allowDefault && secret.Equal(defaultSeed, usedSeed) {
+		return nil
+	}
+	if s.ownerOfSeedLocked(usedSeed) != "" {
+		// 换设备复用其他节点的密码：允许接入，由控制面记录复用提醒。
+		return nil
+	}
 	if !allowDefault {
 		return ErrDefaultDisabled
 	}
-	if !secret.Equal(defaultSeed, usedSeed) {
-		return ErrPasswordMismatch
+	return ErrPasswordMismatch
+}
+
+// ownerOfSeedLocked 返回哈希所属节点；调用前必须已持有 s.mu。
+func (s *Store) ownerOfSeedLocked(seed string) string {
+	for node, e := range s.nodes {
+		if e.Seed != "" && secret.Equal(e.Seed, seed) {
+			return node
+		}
 	}
-	return nil
+	return ""
 }
 
 // Generate 生成 32 位 base32 随机密码（仅含 A-Z2-7，便于抄写）。
@@ -267,8 +301,8 @@ func ValidatePassword(password string) error {
 	return nil
 }
 
-func (s *Store) setSeed(nodeID, seed string) (Entry, error) {
-	e := Entry{Seed: seed, UpdatedAt: time.Now()}
+func (s *Store) setEntry(nodeID, seed, password string) (Entry, error) {
+	e := Entry{Seed: seed, Password: password, UpdatedAt: time.Now()}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	prev, had := s.nodes[nodeID]
