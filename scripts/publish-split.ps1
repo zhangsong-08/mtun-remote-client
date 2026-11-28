@@ -116,8 +116,9 @@ foreach ($role in $roles) {
 
     if ($Push) {
         Write-Host ("    推送到 {0} (main)" -f $role.Repo)
-        # 用已配置的 SSH 远端推送，避免走 HTTPS 时触发交互式凭据输入
-        Invoke-Git $tree @("push", $role.Remote, "$($branch):main")
+        # 两个仓库只是生成出来的快照，内容以本次裁剪结果为准，因此强制推送，
+        # 避免上一次快照提交与本次基线不一致导致非快进。
+        Invoke-Git $tree @("push", "--force", $role.Remote, "$($branch):main")
         Write-Host "    推送完成"
     } else {
         Write-Host "    未推送（加 -Push 生效）"
