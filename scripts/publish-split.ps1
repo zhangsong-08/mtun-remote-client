@@ -17,7 +17,9 @@ param(
     [switch]$Push
 )
 
-$ErrorActionPreference = "Stop"
+# git 会把正常进度写到 stderr，PowerShell 5 在 Stop 模式下会误判为错误，
+# 因此这里用 Continue，并由 Invoke-Git 根据退出码显式抛错。
+$ErrorActionPreference = "Continue"
 
 $roles = @(
     @{
